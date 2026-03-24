@@ -18,10 +18,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bytes": "516d5465737448617368"
+                  "bytes": "516d48617368"
                 },
                 {
-                  "bytes": "6d65726b6c655f726f6f745f6279746573"
+                  "bytes": "726f6f74"
                 }
               ]
             }
@@ -34,7 +34,7 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 0,
+    "sequence_number": 5000,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -84,7 +84,7 @@
                         "symbol": "ipfs_hash"
                       },
                       "val": {
-                        "bytes": "516d5465737448617368"
+                        "bytes": "516d48617368"
                       }
                     },
                     {
@@ -92,7 +92,7 @@
                         "symbol": "merkle_root"
                       },
                       "val": {
-                        "bytes": "6d65726b6c655f726f6f745f6279746573"
+                        "bytes": "726f6f74"
                       }
                     },
                     {

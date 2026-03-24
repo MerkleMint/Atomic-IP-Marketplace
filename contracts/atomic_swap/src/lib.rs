@@ -1,7 +1,7 @@
 #![no_std]
+use ip_registry::IpRegistryClient;
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
 
-// ~1 year in ledgers (5s per ledger)
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
 #[contracttype]
@@ -43,6 +43,7 @@ pub struct AtomicSwap;
 #[contractimpl]
 impl AtomicSwap {
     /// Buyer initiates swap by locking USDC into the contract.
+    /// Cross-calls ip_registry to verify seller owns the listing.
     pub fn initiate_swap(
         env: Env,
         listing_id: u64,
@@ -51,8 +52,14 @@ impl AtomicSwap {
         usdc_token: Address,
         usdc_amount: i128,
         zk_verifier: Address,
+        ip_registry: Address,
     ) -> u64 {
         buyer.require_auth();
+
+        // Verify seller owns the listing in ip_registry
+        let listing = IpRegistryClient::new(&env, &ip_registry).get_listing(&listing_id);
+        assert!(listing.owner == seller, "seller does not own this listing");
+
         token::Client::new(&env, &usdc_token).transfer(
             &buyer,
             &env.current_contract_address(),
@@ -125,10 +132,8 @@ impl AtomicSwap {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{
-        testutils::Address as _,
-        token, Env,
-    };
+    use ip_registry::{IpRegistry, IpRegistryClient};
+    use soroban_sdk::{testutils::Address as _, token, Bytes, Env};
 
     #[test]
     fn test_get_swap_status_returns_none_for_missing_swap() {
@@ -152,7 +157,6 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        // Deploy a Stellar asset (USDC stand-in) and mint to buyer
         let usdc_admin = Address::generate(&env);
         let usdc_id = env.register_stellar_asset_contract_v2(usdc_admin.clone()).address();
         let usdc_admin_client = token::StellarAssetClient::new(&env, &usdc_id);
@@ -163,22 +167,57 @@ mod test {
         let zk_verifier = Address::generate(&env);
         usdc_admin_client.mint(&buyer, &1000);
 
-        // Deploy swap contract
+        // Register listing with seller as owner
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        // Buyer initiates swap
-        let swap_id = client.initiate_swap(&1, &buyer, &seller, &usdc_id, &500, &zk_verifier);
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
 
-        // Seller confirms with a decryption key
         let key = Bytes::from_slice(&env, b"super-secret-key");
         client.confirm_swap(&swap_id, &key);
 
-        // Key must be retrievable on-chain
-        let stored = client.get_decryption_key(&swap_id);
-        assert_eq!(stored, Some(key));
-
-        // USDC must have moved to seller
+        assert_eq!(client.get_decryption_key(&swap_id), Some(key));
         assert_eq!(usdc_client.balance(&seller), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "seller does not own this listing")]
+    fn test_seller_impersonation_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env.register_stellar_asset_contract_v2(usdc_admin.clone()).address();
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&Address::generate(&env), &1000);
+
+        let buyer = Address::generate(&env);
+        let real_seller = Address::generate(&env);
+        let impersonator = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        // Register listing with real_seller as owner
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id = registry.register_ip(
+            &real_seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // impersonator tries to pose as seller
+        client.initiate_swap(&listing_id, &buyer, &impersonator, &usdc_id, &500, &zk_verifier, &registry_id);
     }
 }
