@@ -461,6 +461,11 @@ pub fn unpause(env: Env) {
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
     }
 
+    /// Returns the total number of swaps ever initiated.
+    pub fn swap_count(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
+    }
+
     /// Returns all swap IDs where the given address is the seller, in insertion order.
     ///
     /// # Arguments
@@ -1345,6 +1350,50 @@ mod test {
         let ids_b = client.get_swaps_by_seller(&seller_b);
         assert_eq!(ids_b.len(), 1);
         assert_eq!(ids_b.get(0).unwrap(), id_b);
+    }
+
+    #[test]
+    fn test_swap_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 1000);
+
+        assert_eq!(client.swap_count(), 0);
+
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id_2 = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash-sc2"),
+            &Bytes::from_slice(&env, b"root-sc2"),
+        );
+
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        assert_eq!(client.swap_count(), 1);
+
+        client.initiate_swap(
+            &listing_id_2,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        assert_eq!(client.swap_count(), 2);
     }
 
     #[test]
