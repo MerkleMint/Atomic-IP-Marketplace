@@ -1,6 +1,5 @@
 /target
 .env
-test_snapshots/
 build_error.txt
 build_output.txt
 *.wasm

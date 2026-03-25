@@ -64,6 +64,36 @@ pub enum DataKey {
     Paused,
 }
 
+/// Emitted when a buyer initiates a swap.
+#[contractevent]
+pub struct SwapInitiated {
+    #[topic]
+    pub swap_id: u64,
+    #[topic]
+    pub listing_id: u64,
+    pub buyer: Address,
+    pub seller: Address,
+    pub usdc_amount: i128,
+}
+
+/// Emitted when a seller confirms a swap and releases the decryption key.
+#[contractevent]
+pub struct SwapConfirmed {
+    #[topic]
+    pub swap_id: u64,
+    pub seller: Address,
+    pub decryption_key: Bytes,
+}
+
+/// Emitted when a buyer cancels an expired swap and reclaims USDC.
+#[contractevent]
+pub struct SwapCancelled {
+    #[topic]
+    pub swap_id: u64,
+    pub buyer: Address,
+    pub usdc_amount: i128,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -179,7 +209,10 @@ pub fn unpause(env: Env) {
             &env.current_contract_address(),
             &usdc_amount,
         );
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
+        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let id: u64 = prev
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         env.storage().instance().set(&DataKey::Counter, &id);
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
@@ -187,7 +220,7 @@ pub fn unpause(env: Env) {
             &Swap {
                 listing_id,
                 buyer: buyer.clone(),
-                seller,
+                seller: seller.clone(),
                 usdc_amount,
                 usdc_token,
                 zk_verifier,
@@ -295,7 +328,7 @@ pub fn unpause(env: Env) {
         }
 
         swap.status = SwapStatus::Completed;
-        swap.decryption_key = Some(decryption_key);
+        swap.decryption_key = Some(decryption_key.clone());
         env.storage().persistent().set(&key, &swap);
         env.storage()
             .persistent()
@@ -303,6 +336,13 @@ pub fn unpause(env: Env) {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        SwapConfirmed {
+            swap_id,
+            seller: swap.seller,
+            decryption_key,
+        }
+        .publish(&env);
     }
 
     /// Buyer cancels and reclaims USDC if seller never confirms.
@@ -348,6 +388,13 @@ pub fn unpause(env: Env) {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        SwapCancelled {
+            swap_id,
+            buyer: swap.buyer,
+            usdc_amount: swap.usdc_amount,
+        }
+        .publish(&env);
     }
 
     /// Retrieves the current status of a given swap.
@@ -415,6 +462,7 @@ pub fn unpause(env: Env) {
 #[cfg(test)]
 mod test {
     use super::*;
+    extern crate std;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
