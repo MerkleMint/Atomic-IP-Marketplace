@@ -24,6 +24,18 @@ pub struct IpRegistry;
 #[contractimpl]
 impl IpRegistry {
     /// Register a new IP listing. Returns the listing ID.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `owner` - The address of the owner registering the IP.
+    /// * `ipfs_hash` - The IPFS hash of the off-chain IP data.
+    /// * `merkle_root` - The Merkle root of the listing data (used for ZK verifications).
+    /// 
+    /// # Returns
+    /// Returns the unique `u64` identifier for the newly registered listing.
+    /// 
+    /// # Panics
+    /// * Panics if the caller is not the `owner`.
     pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> u64 {
         owner.require_auth();
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
@@ -43,6 +55,17 @@ impl IpRegistry {
         id
     }
 
+    /// Retrieves a specific IP listing by its ID.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `listing_id` - The ID of the listing to retrieve.
+    /// 
+    /// # Returns
+    /// Returns the `Listing` struct containing owner, IPFS hash, and Merkle root.
+    /// 
+    /// # Panics
+    /// * Panics if the listing is not found in persistent storage.
     pub fn get_listing(env: Env, listing_id: u64) -> Listing {
         env.storage()
             .persistent()
@@ -50,6 +73,17 @@ impl IpRegistry {
             .expect("listing not found")
     }
 
+    /// Retrieves all listing IDs owned by a specific address.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `owner` - The address of the owner.
+    /// 
+    /// # Returns
+    /// Returns a `Vec<u64>` containing all listing IDs associated with the specified owner.
+    /// 
+    /// # Panics
+    /// This view function does not panic under normal conditions, but will panic if internal persistent loading fails for an existing ID.
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
         env.storage()
             .persistent()

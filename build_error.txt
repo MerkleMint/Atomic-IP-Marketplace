@@ -1,0 +1,133 @@
+﻿cargo :    Compiling 
+proc-macro2 v1.0.106
+At line:1 char:1
++ cargo check 
+--workspace 2>&1 | 
+Out-File -Encoding 
+utf8 build_error.tx 
+...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (   Compili   
+ ng proc-macro2 v1    
+.0.106:String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+   Compiling quote 
+v1.0.45
+   Compiling typenum 
+v1.19.0
+   Compiling 
+serde_core v1.0.228
+   Compiling serde 
+v1.0.228
+   Compiling zmij 
+v1.0.21
+   Compiling 
+serde_json v1.0.149
+   Compiling 
+generic-array v0.14.9
+   Compiling 
+num-traits v0.2.19
+   Compiling 
+thiserror v1.0.69
+   Compiling zerocopy 
+v0.8.42
+   Compiling syn 
+v1.0.109
+   Compiling 
+rustc_version v0.4.1
+   Compiling paste 
+v1.0.15
+   Compiling 
+data-encoding v2.10.0
+error: linker 
+`link.exe` not found
+  |
+  = note: program not 
+found
+
+note: the msvc 
+targets depend on the 
+msvc linker but 
+`link.exe` was not 
+found
+
+note: please ensure 
+that Visual Studio 
+2017 or later, or 
+Build Tools for 
+Visual Studio were 
+installed with the 
+Visual C++ option.
+
+note: VS Code is a 
+different product, 
+and is not sufficient.
+
+error: could not 
+compile 
+`generic-array` 
+(build script) due to 
+1 previous error
+warning: build 
+failed, waiting for 
+other jobs to 
+finish...
+error: could not 
+compile `num-traits` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `serde_json` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `num-traits` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `zmij` (build 
+script) due to 1 
+previous error
+error: could not 
+compile `quote` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `serde` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `paste` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `syn` (build 
+script) due to 1 
+previous error
+error: could not 
+compile `thiserror` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `proc-macro2` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `serde_core` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `zerocopy` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `typenum` 
+(build script) due to 
+1 previous error
