@@ -13,6 +13,7 @@ pub enum ContractError {
     EmptyDecryptionKey = 1,
     SwapNotFound = 2,
     InvalidAmount = 3,
+    AlreadyInitialized = 4,
 }
 
 #[contracttype]
@@ -70,10 +71,9 @@ impl AtomicSwap {
         fee_recipient: Address,
         cancel_delay_secs: u64,
     ) {
-        assert!(
-            !env.storage().instance().has(&DataKey::Config),
-            "already initialized"
-        );
+        if env.storage().instance().has(&DataKey::Config) {
+            panic_with_error!(&env, ContractError::AlreadyInitialized);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
             &DataKey::Config,
@@ -1094,5 +1094,17 @@ mod test {
             Some(SwapStatus::Cancelled)
         );
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_initialize_twice_panics() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
     }
 }
