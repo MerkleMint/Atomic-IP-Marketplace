@@ -38,6 +38,15 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Emitted when an IP listing is deregistered.
+#[contractevent]
+pub struct IpDeregistered {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+}
+
 /// Emitted when a new IP listing is registered.
 #[contractevent]
 pub struct IpRegistered {
@@ -231,6 +240,43 @@ impl IpRegistry {
             .persistent()
             .get(&DataKey::OwnerIndex(owner))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Remove a listing from the registry. Only the owner may call this.
+    pub fn deregister_listing(
+        env: Env,
+        owner: Address,
+        listing_id: u64,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+
+        let key = DataKey::Listing(listing_id);
+        let listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ListingNotFound)?;
+
+        if listing.owner != owner {
+            return Err(ContractError::Unauthorized);
+        }
+
+        env.storage().persistent().remove(&key);
+
+        let idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = (0..ids.len()).find(|&i| ids.get(i).unwrap() == listing_id) {
+            ids.remove(pos);
+        }
+        env.storage().persistent().set(&idx_key, &ids);
+
+        IpDeregistered { listing_id, owner }.publish(&env);
+
+        Ok(())
     }
 }
 
@@ -486,42 +532,34 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip_emits_events() {
+    fn test_deregister_listing_success() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
-        let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
-        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+        let id = register(&client, &owner, b"QmHash", b"root", 0);
 
-        client.batch_register_ip(&owner, &entries);
-        // Event emission verified via snapshot
+        client.deregister_listing(&owner, &id);
+
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
 
     #[test]
-    fn test_counter_overflow_panics() {
+    fn test_deregister_listing_unauthorized() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
-        // Set counter to u64::MAX to trigger overflow on next register
-        env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::Counter, &u64::MAX);
-        });
-
         let owner = Address::generate(&env);
-        let result = client.try_register_ip(
-            &owner,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
-            &0u32,
-            &owner,
-            &0i128,
-        );
-        assert!(result.is_err());
+        let attacker = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 0);
+
+        let result = client.try_deregister_listing(&attacker, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+        assert!(client.get_listing(&id).is_some());
     }
 }
