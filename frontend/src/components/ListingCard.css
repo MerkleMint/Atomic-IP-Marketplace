@@ -1,0 +1,132 @@
+.listing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.15s;
+}
+
+.listing-card[data-has-swaps="true"] {
+  border-color: #6c63ff;
+}
+
+/* Header */
+.listing-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.listing-card__id {
+  font-weight: 700;
+  font-size: 14px;
+  color: #2d3748;
+}
+
+.listing-card__badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #6c63ff;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Metadata */
+.listing-card__meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.listing-card__meta-row {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.listing-card__meta-row dt {
+  color: #718096;
+  min-width: 72px;
+  flex-shrink: 0;
+}
+
+.listing-card__meta-row dd {
+  margin: 0;
+  color: #2d3748;
+  font-weight: 500;
+}
+
+.listing-card__hash {
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Pending swaps section */
+.listing-card__swaps {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.listing-card__swaps-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #718096;
+}
+
+.listing-card__swaps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.listing-card__swap-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f7f8fc;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.listing-card__swap-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.listing-card__swap-id {
+  font-weight: 600;
+  font-size: 13px;
+  color: #2d3748;
+}
+
+.listing-card__swap-amount {
+  font-size: 13px;
+  color: #4a5568;
+}
+
+.listing-card__swap-buyer {
+  font-size: 12px;
+  color: #718096;
+  font-family: monospace;
+}

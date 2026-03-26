@@ -13,8 +13,13 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -29,8 +34,16 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
 
-      - name: Run tests
-        run: cargo test --workspace
+      - name: Run tests (regenerate snapshots if stale)
+        run: SOROBAN_TEST_SNAPSHOT_UPDATE=1 cargo test --workspace
+
+      - name: Commit regenerated snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add contracts/*/test_snapshots
+          git diff --cached --quiet || git commit -m "chore: regenerate test snapshots [skip ci]"
+          git push || true
 
   build-wasm:
     name: Build WASM Artifacts
