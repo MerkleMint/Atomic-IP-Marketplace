@@ -1,14 +1,19 @@
 import { useState, useEffect } from "react";
 
+interface CountdownResult {
+  remaining: number;
+  formatted: string;
+}
+
 /**
  * Returns remaining seconds until `targetTimestamp` (unix seconds).
  * Updates every second. Returns 0 once expired.
  */
-export function useCountdown(targetTimestamp) {
+export function useCountdown(targetTimestamp: number): CountdownResult {
   const getRemaining = () =>
     Math.max(0, targetTimestamp - Math.floor(Date.now() / 1000));
 
-  const [remaining, setRemaining] = useState(getRemaining);
+  const [remaining, setRemaining] = useState<number>(getRemaining);
 
   useEffect(() => {
     if (remaining === 0) return;

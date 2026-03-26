@@ -1,27 +1,22 @@
 import React, { useState } from "react";
-import { confirmSwap } from "../lib/contractClient";
+import { confirmSwap, type Swap } from "../lib/contractClient";
+import type { ConnectedWallet } from "../lib/walletKit";
 import "./ConfirmSwapForm.css";
 
-/**
- * ConfirmSwapForm
- *
- * Allows a seller to confirm a pending swap by submitting the decryption key,
- * which atomically releases USDC to the seller.
- *
- * Props:
- *   swap      - { id, listing_id, usdc_amount, status, buyer }
- *   wallet    - connected wallet { address, signTransaction }
- *   onSuccess - callback fired after successful confirmation
- */
-export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
+interface Props {
+  swap: Swap;
+  wallet: ConnectedWallet;
+  onSuccess: () => void;
+}
+
+export function ConfirmSwapForm({ swap, wallet, onSuccess }: Props) {
   const [decryptionKey, setDecryptionKey] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Only sellers with a pending swap should see this
   if (swap.status !== "Pending") return null;
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -36,7 +31,7 @@ export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
       setDecryptionKey("");
       onSuccess();
     } catch (err) {
-      setError(err.message || "Failed to confirm swap. Please try again.");
+      setError(err instanceof Error ? err.message : "Failed to confirm swap. Please try again.");
     } finally {
       setLoading(false);
     }

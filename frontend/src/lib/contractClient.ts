@@ -1,23 +1,37 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import type { ConnectedWallet } from "./walletKit";
 
 const RPC_URL =
-  import.meta.env.VITE_STELLAR_RPC_URL ||
-  "https://soroban-testnet.stellar.org";
+  import.meta.env.VITE_STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org";
 
-const ATOMIC_SWAP_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP;
+const ATOMIC_SWAP_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP as string | undefined;
 
-const networkPassphrase = () =>
-  import.meta.env.VITE_STELLAR_NETWORK === "mainnet"
+function networkPassphrase(): string {
+  return import.meta.env.VITE_STELLAR_NETWORK === "mainnet"
     ? StellarSdk.Networks.PUBLIC
     : StellarSdk.Networks.TESTNET;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface Swap {
+  id: number;
+  listing_id: number;
+  buyer: string;
+  seller: string;
+  usdc_amount: number;
+  created_at: number;
+  expires_at: number;
+  status: string;
+  decryption_key: string | null;
+}
 
 // ─── View helpers ─────────────────────────────────────────────────────────────
 
-/**
- * Simulate a read-only contract call and return the raw ScVal result.
- * Uses a throwaway keypair as the source — no signing required.
- */
-async function simulateView(functionName, args) {
+async function simulateView(
+  functionName: string,
+  args: StellarSdk.xdr.ScVal[]
+): Promise<StellarSdk.xdr.ScVal | undefined> {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -41,37 +55,24 @@ async function simulateView(functionName, args) {
     throw new Error(`Simulation failed: ${result.error}`);
   }
 
-  return result.result?.retval;
+  return (result as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
 }
 
-/**
- * Decode a Soroban ScVal (Swap struct) into a plain JS object using scValToNative.
- *
- * scValToNative converts:
- *   - u64  → BigInt
- *   - i128 → BigInt
- *   - Address → string (G...)
- *   - Map  → object
- *   - Vec  → array
- *   - Bytes → Buffer
- *   - Enum variant → { tag: string, values: [...] }
- */
-function decodeSwapScVal(scVal, swapId) {
+function decodeSwapScVal(scVal: StellarSdk.xdr.ScVal, swapId: number): Swap | null {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
-  const native = StellarSdk.scValToNative(scVal);
+  const native = StellarSdk.scValToNative(scVal) as Record<string, unknown>;
   if (!native || typeof native !== "object") return null;
 
-  // SwapStatus enum: scValToNative returns { tag: "Pending"|"Completed"|"Cancelled" }
   const status =
     typeof native.status === "object" && native.status !== null
-      ? native.status.tag ?? "Unknown"
+      ? ((native.status as { tag?: string }).tag ?? "Unknown")
       : String(native.status ?? "Unknown");
 
-  // decryption_key is Option<Bytes>: scValToNative returns null or Buffer
-  let decryptionKey = null;
-  if (native.decryption_key instanceof Uint8Array || Buffer.isBuffer(native.decryption_key)) {
-    decryptionKey = Buffer.from(native.decryption_key).toString("hex");
+  let decryptionKey: string | null = null;
+  const rawKey = native.decryption_key;
+  if (rawKey instanceof Uint8Array || Buffer.isBuffer(rawKey)) {
+    decryptionKey = Buffer.from(rawKey as Uint8Array).toString("hex");
   }
 
   return {
@@ -87,41 +88,26 @@ function decodeSwapScVal(scVal, swapId) {
   };
 }
 
-/**
- * Fetch all swap IDs for a buyer by calling get_swaps_by_buyer.
- * @param {string} buyerAddress - Stellar public key (G...)
- * @returns {Promise<number[]>}
- */
-export async function getSwapsByBuyer(buyerAddress) {
-  const addressScVal = StellarSdk.nativeToScVal(
-    new StellarSdk.Address(buyerAddress),
-    { type: "address" }
-  );
+export async function getSwapsByBuyer(buyerAddress: string): Promise<number[]> {
+  const addressScVal = StellarSdk.nativeToScVal(new StellarSdk.Address(buyerAddress), {
+    type: "address",
+  });
 
   const retval = await simulateView("get_swaps_by_buyer", [addressScVal]);
   if (!retval) return [];
 
-  // scValToNative on Vec<u64> returns BigInt[]
   const arr = StellarSdk.scValToNative(retval);
   if (!Array.isArray(arr)) return [];
   return arr.map((v) => Number(v));
 }
 
-/**
- * Fetch full swap details for a single swap ID.
- * Reads the Swap struct from contract storage via getLedgerEntries.
- * @param {number} swapId
- * @returns {Promise<object|null>}
- */
-export async function getSwap(swapId) {
+export async function getSwap(swapId: number): Promise<Swap | null> {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
 
-  // Build the DataKey::Swap(swapId) storage key
-  // DataKey::Swap(u64) encodes as a Vec<ScVal> = [Symbol("Swap"), u64]
   const dataKey = StellarSdk.xdr.ScVal.scvVec([
     StellarSdk.xdr.ScVal.scvSymbol("Swap"),
     StellarSdk.nativeToScVal(swapId, { type: "u64" }),
@@ -138,42 +124,34 @@ export async function getSwap(swapId) {
   );
 
   const response = await server.getLedgerEntries(ledgerKey);
-
   if (!response.entries || response.entries.length === 0) return null;
 
-  const entry = response.entries[0];
-  const contractData = entry.val.contractData();
-  const swapScVal = contractData.val();
-
+  const swapScVal = response.entries[0].val.contractData().val();
   return decodeSwapScVal(swapScVal, swapId);
 }
 
-/**
- * Fetch the current ledger timestamp (unix seconds).
- * @returns {Promise<number>}
- */
-export async function getLedgerTimestamp() {
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
-  const latest = await server.getLatestLedger();
-  // getLatestLedger returns { id, protocolVersion, sequence }
-  // We approximate timestamp from sequence (not exact but sufficient for UI)
-  // Real approach: use server.getNetwork() or a known genesis timestamp
-  // For now return Date.now() / 1000 as a safe fallback
+export async function getDecryptionKey(swapId: number): Promise<string | null> {
+  const retval = await simulateView("get_decryption_key", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+  ]);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  // Contract returns Option<Bytes> — native will be Uint8Array or null/undefined
+  if (native instanceof Uint8Array || Buffer.isBuffer(native)) {
+    return Buffer.from(native as Uint8Array).toString("hex");
+  }
+  return null;
+}
+
+export async function getLedgerTimestamp(): Promise<number> {
   return Math.floor(Date.now() / 1000);
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
 
-/**
- * Calls cancel_swap(swap_id) on the atomic_swap contract.
- * @param {string} swapId - The swap ID (u64 as string or number)
- * @param {object} wallet  - Connected wallet with signTransaction method
- * @returns {Promise<void>}
- */
-export async function cancelSwap(swapId, wallet) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
-    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  }
+export async function cancelSwap(swapId: number, wallet: ConnectedWallet): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
@@ -184,10 +162,7 @@ export async function cancelSwap(swapId, wallet) {
     networkPassphrase: networkPassphrase(),
   })
     .addOperation(
-      contract.call(
-        "cancel_swap",
-        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
-      )
+      contract.call("cancel_swap", StellarSdk.nativeToScVal(swapId, { type: "u64" }))
     )
     .setTimeout(30)
     .build();
@@ -195,19 +170,13 @@ export async function cancelSwap(swapId, wallet) {
   await submitAndPoll(tx, wallet, server);
 }
 
-/**
- * Calls confirm_swap(swap_id, decryption_key) on the atomic_swap contract.
- * @param {string|number} swapId
- * @param {string} decryptionKey - hex or base64 string of the decryption key
- * @param {object} wallet        - { address, signTransaction }
- */
-export async function confirmSwap(swapId, decryptionKey, wallet) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
-    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  }
-  if (!decryptionKey || !decryptionKey.trim()) {
-    throw new Error("Decryption key is required.");
-  }
+export async function confirmSwap(
+  swapId: number,
+  decryptionKey: string,
+  wallet: ConnectedWallet
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  if (!decryptionKey.trim()) throw new Error("Decryption key is required.");
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
@@ -224,7 +193,7 @@ export async function confirmSwap(swapId, decryptionKey, wallet) {
     .addOperation(
       contract.call(
         "confirm_swap",
-        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
         keyBytes
       )
     )
@@ -236,24 +205,30 @@ export async function confirmSwap(swapId, decryptionKey, wallet) {
 
 // ─── Shared submit helper ─────────────────────────────────────────────────────
 
-async function submitAndPoll(tx, wallet, server) {
+async function submitAndPoll(
+  tx: StellarSdk.Transaction,
+  wallet: ConnectedWallet,
+  server: StellarSdk.SorobanRpc.Server
+): Promise<void> {
   const preparedTx = await server.prepareTransaction(tx);
-
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
   const signedTx = StellarSdk.TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
 
-  const result = await server.sendTransaction(signedTx);
+  const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
   if (result.status === "ERROR") {
-    throw new Error(`Transaction failed: ${result.errorResult}`);
+    throw new Error(`Transaction failed: ${JSON.stringify(result.errorResult)}`);
   }
 
-  let response = result;
-  while (response.status === "PENDING" || response.status === "NOT_FOUND") {
+  let response = await server.getTransaction(result.hash);
+  while (
+    (response as { status: string }).status === "PENDING" ||
+    (response as { status: string }).status === "NOT_FOUND"
+  ) {
     await new Promise((r) => setTimeout(r, 1500));
     response = await server.getTransaction(result.hash);
   }
 
-  if (response.status !== "SUCCESS") {
-    throw new Error(`Transaction did not succeed: ${response.status}`);
+  if ((response as { status: string }).status !== "SUCCESS") {
+    throw new Error(`Transaction did not succeed: ${(response as { status: string }).status}`);
   }
 }
