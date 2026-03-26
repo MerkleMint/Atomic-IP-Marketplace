@@ -130,6 +130,20 @@ export async function getSwap(swapId: number): Promise<Swap | null> {
   return decodeSwapScVal(swapScVal, swapId);
 }
 
+export async function getDecryptionKey(swapId: number): Promise<string | null> {
+  const retval = await simulateView("get_decryption_key", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+  ]);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  // Contract returns Option<Bytes> — native will be Uint8Array or null/undefined
+  if (native instanceof Uint8Array || Buffer.isBuffer(native)) {
+    return Buffer.from(native as Uint8Array).toString("hex");
+  }
+  return null;
+}
+
 export async function getLedgerTimestamp(): Promise<number> {
   return Math.floor(Date.now() / 1000);
 }

@@ -1,6 +1,7 @@
 import React from "react";
 import { CancelSwapButton } from "./CancelSwapButton";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
+import { DecryptionKeyPanel } from "./DecryptionKeyPanel";
 import type { Swap } from "../lib/contractClient";
 import type { ConnectedWallet } from "../lib/walletKit";
 import "./SwapCard.css";
@@ -15,6 +16,7 @@ interface Props {
 export function SwapCard({ swap, ledgerTimestamp, wallet, onSwapUpdated }: Props) {
   const isBuyer = wallet.address === swap.buyer;
   const isSeller = wallet.address === swap.seller;
+  const isCompleted = swap.status === "Completed";
 
   return (
     <div className="swap-card">
@@ -26,13 +28,17 @@ export function SwapCard({ swap, ledgerTimestamp, wallet, onSwapUpdated }: Props
         <span className="swap-card__amount">{swap.usdc_amount} USDC</span>
       </div>
 
-      {isBuyer && (
+      {isBuyer && swap.status === "Pending" && (
         <CancelSwapButton
           swap={swap}
           ledgerTimestamp={ledgerTimestamp}
           wallet={wallet}
           onSuccess={onSwapUpdated}
         />
+      )}
+
+      {isBuyer && isCompleted && (
+        <DecryptionKeyPanel swapId={swap.id} cachedKey={swap.decryption_key} />
       )}
 
       {isSeller && (
