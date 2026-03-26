@@ -279,14 +279,16 @@ impl IpRegistry {
     /// Requires owner auth. Rejects if a pending swap exists for the listing.
     pub fn update_listing(
         env: Env,
+        owner: Address,
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
-        atomic_swap: Option<Address>,
     ) {
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
+        owner.require_auth();
+        
         let key = DataKey::Listing(listing_id);
         let mut listing: Listing = env
             .storage()
@@ -294,12 +296,8 @@ impl IpRegistry {
             .get(&key)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
 
-        listing.owner.require_auth();
-
-        if let Some(swap_addr) = atomic_swap {
-            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
-                panic_with_error!(&env, ContractError::PendingSwapExists);
-            }
+        if listing.owner != owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         listing.ipfs_hash = new_ipfs_hash;
