@@ -891,4 +891,17 @@ mod test {
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::ResolvedSeller));
         assert_eq!(usdc_client.balance(&seller), 500);
     }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_initialize_twice_returns_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64);
+    }
 }
