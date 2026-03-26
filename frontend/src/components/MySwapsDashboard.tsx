@@ -4,22 +4,12 @@ import { useMySwaps } from "../hooks/useMySwaps";
 import { SwapCard } from "./SwapCard";
 import "./MySwapsDashboard.css";
 
-/**
- * MySwapsDashboard
- *
- * Buyer-facing page that lists all swaps associated with the connected wallet.
- * Polls every 15 s and exposes a manual refresh button.
- *
- * Renders nothing when no wallet is connected — the WalletConnectButton
- * in the header handles that prompt.
- */
 export function MySwapsDashboard() {
   const { wallet } = useWallet();
   const { swaps, ledgerTimestamp, loading, error, refresh } = useMySwaps(
     wallet?.address ?? null
   );
 
-  // ── Not connected ──────────────────────────────────────────────────────────
   if (!wallet) {
     return (
       <section className="msd" aria-label="My Swaps Dashboard">
@@ -31,7 +21,6 @@ export function MySwapsDashboard() {
     );
   }
 
-  // ── Connected ──────────────────────────────────────────────────────────────
   const pendingSwaps = swaps.filter((s) => s.status === "Pending");
   const settledSwaps = swaps.filter((s) => s.status !== "Pending");
 
@@ -61,7 +50,6 @@ export function MySwapsDashboard() {
         </p>
       )}
 
-      {/* Initial skeleton while loading for the first time */}
       {loading && swaps.length === 0 && (
         <ul className="msd__list" aria-label="Loading swaps">
           {[1, 2, 3].map((n) => (
@@ -70,7 +58,6 @@ export function MySwapsDashboard() {
         </ul>
       )}
 
-      {/* Empty state */}
       {!loading && swaps.length === 0 && !error && (
         <div className="msd__empty">
           <span className="msd__empty-icon" aria-hidden="true">📭</span>
@@ -78,7 +65,6 @@ export function MySwapsDashboard() {
         </div>
       )}
 
-      {/* Active / pending swaps */}
       {pendingSwaps.length > 0 && (
         <div className="msd__group">
           <h3 className="msd__group-title">
@@ -100,7 +86,6 @@ export function MySwapsDashboard() {
         </div>
       )}
 
-      {/* Completed / cancelled swaps */}
       {settledSwaps.length > 0 && (
         <div className="msd__group">
           <h3 className="msd__group-title">
