@@ -245,9 +245,13 @@ impl IpRegistry {
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Listing(listing_id))
+        let key = DataKey::Listing(listing_id);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        env.storage().persistent().get(&key)
     }
 
     pub fn listing_count(env: Env) -> u64 {
@@ -597,5 +601,159 @@ mod test {
         let result = client.try_deregister_listing(&attacker, &id);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
+    }
+
+    #[test]
+    fn test_update_listing_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmOld"),
+            &Bytes::from_slice(&env, b"old_root"),
+        );
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"new_root"),
+        );
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.ipfs_hash, Bytes::from_slice(&env, b"QmNew"));
+        assert_eq!(listing.merkle_root, Bytes::from_slice(&env, b"new_root"));
+    }
+
+    #[test]
+    fn test_update_listing_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        let result = client.try_update_listing(
+            &attacker,
+            &id,
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"new_root"),
+        );
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_update_listing_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let result = client.try_update_listing(
+            &owner,
+            &999u64,
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"new_root"),
+        );
+        assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
+    }
+
+    #[test]
+    fn test_deregister_listing_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        client.deregister_listing(&owner, &id);
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+    }
+
+    #[test]
+    fn test_deregister_listing_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        let result = client.try_deregister_listing(&attacker, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_transfer_ownership_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        client.transfer_ownership(&owner, &id, &new_owner);
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.owner, new_owner);
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert_eq!(client.list_by_owner(&new_owner).len(), 1);
+    }
+
+    #[test]
+    fn test_transfer_ownership_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        let result = client.try_transfer_ownership(&attacker, &id, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_list_by_owner_page() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let h = Bytes::from_slice(&env, b"h");
+        let r = Bytes::from_slice(&env, b"r");
+        let id1 = client.register_ip(&owner, &h, &r);
+        let id2 = client.register_ip(&owner, &h, &r);
+        let id3 = client.register_ip(&owner, &h, &r);
+        let page = client.list_by_owner_page(&owner, &0u32, &2u32);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0).unwrap(), id1);
+        assert_eq!(page.get(1).unwrap(), id2);
+        let page2 = client.list_by_owner_page(&owner, &2u32, &2u32);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2.get(0).unwrap(), id3);
     }
 }

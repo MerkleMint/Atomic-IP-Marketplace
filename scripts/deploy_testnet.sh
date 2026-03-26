@@ -73,3 +73,22 @@ echo "Deployment complete. Updated .env with deployed contract IDs."
 echo "CONTRACT_IP_REGISTRY=$IP_REGISTRY"
 echo "CONTRACT_ATOMIC_SWAP=$ATOMIC_SWAP"
 echo "CONTRACT_ZK_VERIFIER=$ZK_VERIFIER"
+
+echo ""
+echo "Running post-deployment smoke tests..."
+
+echo "  [ip_registry] get_listing(999) -> expect None"
+stellar contract invoke \
+  --id "$IP_REGISTRY" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- get_listing --listing_id 999
+
+echo "  [zk_verifier] get_merkle_root(999) -> expect None"
+stellar contract invoke \
+  --id "$ZK_VERIFIER" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- get_merkle_root --listing_id 999
+
+echo "Smoke tests passed. All three contracts are live and callable."

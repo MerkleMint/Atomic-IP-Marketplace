@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
-set -e
-cargo test
+set -euo pipefail
+
+echo "Running all contract tests..."
+cargo test --locked --workspace -- --nocapture
+
 echo "All tests passed."

@@ -1,6 +1,12 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ContractError {
+    Unauthorized = 1,
+}
+
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
 /// A single Merkle proof node: (sibling_hash, is_left)
@@ -31,10 +37,9 @@ impl ZkVerifier {
             .persistent()
             .get::<DataKey, Address>(&owner_key)
         {
-            assert!(
-                existing_owner == owner,
-                "unauthorized: caller is not the listing owner"
-            );
+            if existing_owner != owner {
+                soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized);
+            }
         } else {
             env.storage().persistent().set(&owner_key, &owner);
             env.storage().persistent().extend_ttl(
@@ -67,11 +72,14 @@ impl ZkVerifier {
         leaf: Bytes,
         path: Vec<ProofNode>,
     ) -> bool {
-        let root: BytesN<32> = env
+        let root: BytesN<32> = match env
             .storage()
             .persistent()
             .get(&DataKey::MerkleRoot(listing_id))
-            .expect("root not found");
+        {
+            Some(r) => r,
+            None => return false,
+        };
 
         let mut current: BytesN<32> = env.crypto().sha256(&leaf).into();
         for node in path.iter() {
@@ -141,7 +149,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "unauthorized: caller is not the listing owner")]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
