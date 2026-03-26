@@ -520,9 +520,9 @@ mod test {
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
-        // Set counter to u64::MAX to trigger overflow on next register
+        // Counter is now in persistent storage — set it to u64::MAX to trigger overflow
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::Counter, &u64::MAX);
+            env.storage().persistent().set(&DataKey::Counter, &u64::MAX);
         });
 
         let owner = Address::generate(&env);
