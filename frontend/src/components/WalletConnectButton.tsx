@@ -3,7 +3,14 @@ import { useWallet } from "../context/WalletContext";
 import { isWalletAvailable, WALLET_IDS } from "../lib/walletKit";
 import "./WalletConnectButton.css";
 
-const WALLETS = [
+interface WalletMeta {
+  id: string;
+  name: string;
+  description: string;
+  installUrl: string;
+}
+
+const WALLETS: WalletMeta[] = [
   {
     id: WALLET_IDS.FREIGHTER,
     name: "Freighter",
@@ -24,59 +31,43 @@ const WALLETS = [
   },
 ];
 
-/**
- * WalletConnectButton
- *
- * Renders a connect/disconnect button. When clicked while disconnected,
- * opens a modal listing Freighter, xBull, and Lobstr for selection.
- */
 export function WalletConnectButton() {
   const { wallet, connecting, error, connect, disconnect } = useWallet();
   const [modalOpen, setModalOpen] = useState(false);
-  const [pendingId, setPendingId] = useState(null);
-  const [connectError, setConnectError] = useState(null);
-  const modalRef = useRef(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
-  // Close modal on Escape key
   useEffect(() => {
     if (!modalOpen) return;
-    const onKey = (e) => { if (e.key === "Escape") setModalOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModalOpen(false);
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [modalOpen]);
 
-  // Trap focus inside modal when open
   useEffect(() => {
     if (modalOpen) modalRef.current?.focus();
   }, [modalOpen]);
 
-  const handleConnectClick = () => {
-    setConnectError(null);
-    setModalOpen(true);
-  };
-
-  const handleWalletSelect = async (walletId) => {
+  const handleWalletSelect = async (walletId: string) => {
     setConnectError(null);
     setPendingId(walletId);
     try {
       await connect(walletId);
       setModalOpen(false);
     } catch (err) {
-      setConnectError(err.message || "Connection failed.");
+      setConnectError(err instanceof Error ? err.message : "Connection failed.");
     } finally {
       setPendingId(null);
     }
   };
 
-  const handleDisconnect = () => {
-    disconnect();
-  };
-
-  const handleBackdropClick = (e) => {
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) setModalOpen(false);
   };
 
-  // ── Connected state ──────────────────────────────────────────────────────
   if (wallet) {
     const short = `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`;
     return (
@@ -85,19 +76,18 @@ export function WalletConnectButton() {
           <span className="wck-dot" aria-hidden="true" />
           {wallet.walletId} · {short}
         </span>
-        <button className="wck-btn wck-btn--disconnect" onClick={handleDisconnect}>
+        <button className="wck-btn wck-btn--disconnect" onClick={disconnect}>
           Disconnect
         </button>
       </div>
     );
   }
 
-  // ── Disconnected state ───────────────────────────────────────────────────
   return (
     <>
       <button
         className="wck-btn wck-btn--connect"
-        onClick={handleConnectClick}
+        onClick={() => { setConnectError(null); setModalOpen(true); }}
         disabled={connecting}
         aria-busy={connecting}
       >
@@ -139,9 +129,7 @@ export function WalletConnectButton() {
                       >
                         <span className="wck-wallet-btn__name">{w.name}</span>
                         <span className="wck-wallet-btn__desc">{w.description}</span>
-                        {isPending && (
-                          <span className="wck-spinner" aria-label="Connecting…" />
-                        )}
+                        {isPending && <span className="wck-spinner" aria-label="Connecting…" />}
                       </button>
                     ) : (
                       <a
@@ -162,7 +150,7 @@ export function WalletConnectButton() {
 
             {(connectError || error) && (
               <p className="wck-modal__error" role="alert">
-                {connectError || error}
+                {connectError ?? error}
               </p>
             )}
           </div>
