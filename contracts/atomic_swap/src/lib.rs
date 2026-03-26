@@ -539,9 +539,10 @@ impl AtomicSwap {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Bytes, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, token, Bytes, Env};
 
     fn setup_registry(env: &Env, seller: &Address, price_usdc: i128) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
@@ -647,6 +648,44 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_initiate_swap_emits_swap_initiated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500i128,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        // Use filter_by_contract to isolate events from the atomic_swap contract
+        // (the token contract also emits a transfer event during initiate_swap).
+        // Compare against the expected event using the #[contractevent] struct's
+        // to_xdr method, which is the canonical way to assert events in soroban-sdk v25.
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            std::vec![SwapInitiated {
+                swap_id,
+                listing_id,
+                buyer: buyer.clone(),
+                seller: seller.clone(),
+                usdc_amount: 500i128,
+            }
+            .to_xdr(&env, &contract_id)]
+        );
+    }
 
     #[test]
     fn test_get_swap_status_returns_none_for_missing_swap() {

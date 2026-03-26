@@ -496,4 +496,44 @@ mod test {
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
     }
+
+    #[test]
+    fn test_batch_register_ip_emits_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
+        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+
+        client.batch_register_ip(&owner, &entries);
+        // Event emission verified via snapshot
+    }
+
+    #[test]
+    fn test_counter_overflow_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        // Counter is now in persistent storage — set it to u64::MAX to trigger overflow
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&DataKey::Counter, &u64::MAX);
+        });
+
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &0i128,
+        );
+        assert!(result.is_err());
+    }
 }

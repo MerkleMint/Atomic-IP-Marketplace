@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "lib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
 soroban-poseidon = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { workspace = true }
-soroban-poseidon = { workspace = true }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-poseidon = { workspace = true, features = ["testutils"] }
