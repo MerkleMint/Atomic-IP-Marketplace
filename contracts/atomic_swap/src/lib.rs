@@ -27,6 +27,8 @@ pub enum ContractError {
     SwapNotDisputed = 13,
     /// Buyer's offered amount is below the listing's price_usdc.
     UnderpaymentNotAllowed = 14,
+    /// Configured fee_bps would compute to zero for this usdc_amount.
+    FeeWouldTruncate = 15,
 }
 
 #[contracttype]
@@ -140,6 +142,20 @@ pub struct AtomicSwap;
 
 #[contractimpl]
 impl AtomicSwap {
+    fn calculate_fee_amount(env: &Env, usdc_amount: i128, fee_bps: u32) -> i128 {
+        if fee_bps == 0 {
+            return 0;
+        }
+        let product = usdc_amount
+            .checked_mul(fee_bps as i128)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidAmount));
+        let fee = product / 10_000;
+        if fee == 0 {
+            env.panic_with_error(ContractError::FeeWouldTruncate);
+        }
+        fee
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -246,6 +262,7 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
 
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(config.cancel_delay_secs);
@@ -419,15 +436,15 @@ impl AtomicSwap {
 
         let usdc = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
 
-        // Fee calculation with floor: if fee_bps > 0 and amount > 0, charge at least 1 stroop
+        // Reject tiny amounts that would silently truncate protocol fees.
         let fee: i128 = {
-            let raw = swap.usdc_amount * config.fee_bps as i128 / 10_000;
-            if config.fee_bps > 0 && swap.usdc_amount > 0 && raw == 0 {
-                1
-            } else {
-                raw
-            }
+            Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps)
         };
         let seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
@@ -509,7 +526,7 @@ impl AtomicSwap {
                 .instance()
                 .get::<DataKey, Config>(&DataKey::Config)
             {
-                let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
+                let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
                 let seller_amount = swap.usdc_amount - fee;
                 if fee > 0 {
                     usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
@@ -1078,6 +1095,71 @@ mod test {
 
         assert_eq!(usdc_client.balance(&seller), 1000);
         assert_eq!(usdc_client.balance(&fee_recipient), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #15)")]
+    fn test_initiate_swap_rejects_amount_that_truncates_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1,
+            &zk_verifier,
+            &registry_id,
+        );
+    }
+
+    #[test]
+    fn test_minimum_nonzero_fee_amount_is_allowed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 40);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &40,
+            &zk_verifier,
+            &registry_id,
+        );
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+        client.set_dispute_window(&10u32);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.release_to_seller(&swap_id);
+
+        assert_eq!(usdc_client.balance(&seller), 39);
+        assert_eq!(usdc_client.balance(&fee_recipient), 1);
     }
 
     #[test]
