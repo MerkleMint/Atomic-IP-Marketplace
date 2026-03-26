@@ -539,6 +539,7 @@ impl AtomicSwap {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, token, Bytes, Env};
@@ -669,41 +670,21 @@ mod test {
             &registry_id,
         );
 
-        // SwapInitiated is a #[contractevent] struct with two #[topic] fields.
-        // The SDK emits: topics = (snake_case_struct_name, swap_id, listing_id)
-        //                data   = map { buyer, seller, usdc_amount }
-        //
-        // We assert the event was emitted by checking env.events().all() contains
-        // exactly one entry from our contract with the expected topics and data.
-        let all_events = env.events().all();
-
-        // Filter to events from our contract only (other events come from the
-        // token contract's transfer calls).
-        let mut found = false;
-        for i in 0..all_events.len() {
-            let (emitting_contract, topics, _data) = all_events.get(i).unwrap();
-            if emitting_contract != contract_id {
-                continue;
+        // Use filter_by_contract to isolate events from the atomic_swap contract
+        // (the token contract also emits a transfer event during initiate_swap).
+        // Compare against the expected event using the #[contractevent] struct's
+        // to_xdr method, which is the canonical way to assert events in soroban-sdk v25.
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            std::vec![SwapInitiated {
+                swap_id,
+                listing_id,
+                buyer: buyer.clone(),
+                seller: seller.clone(),
+                usdc_amount: 500i128,
             }
-            // topics is a Vec<Val>; index 0 = struct name symbol,
-            // index 1 = swap_id (u64), index 2 = listing_id (u64)
-            if topics.len() < 3 {
-                continue;
-            }
-            let topic_name: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
-            let topic_swap_id: u64 = topics.get(1).unwrap().into_val(&env);
-            let topic_listing_id: u64 = topics.get(2).unwrap().into_val(&env);
-
-            if topic_name == soroban_sdk::Symbol::new(&env, "swap_initiated")
-                && topic_swap_id == swap_id
-                && topic_listing_id == listing_id
-            {
-                found = true;
-                break;
-            }
-        }
-
-        assert!(found, "SwapInitiated event was not emitted by initiate_swap");
+            .to_xdr(&env, &contract_id)]
+        );
     }
 
     #[test]
