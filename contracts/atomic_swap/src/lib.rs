@@ -541,7 +541,7 @@ impl AtomicSwap {
 mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Bytes, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, token, Bytes, Env};
 
     fn setup_registry(env: &Env, seller: &Address, price_usdc: i128) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
@@ -647,6 +647,64 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_initiate_swap_emits_swap_initiated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500i128,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        // SwapInitiated is a #[contractevent] struct with two #[topic] fields.
+        // The SDK emits: topics = (snake_case_struct_name, swap_id, listing_id)
+        //                data   = map { buyer, seller, usdc_amount }
+        //
+        // We assert the event was emitted by checking env.events().all() contains
+        // exactly one entry from our contract with the expected topics and data.
+        let all_events = env.events().all();
+
+        // Filter to events from our contract only (other events come from the
+        // token contract's transfer calls).
+        let mut found = false;
+        for i in 0..all_events.len() {
+            let (emitting_contract, topics, _data) = all_events.get(i).unwrap();
+            if emitting_contract != contract_id {
+                continue;
+            }
+            // topics is a Vec<Val>; index 0 = struct name symbol,
+            // index 1 = swap_id (u64), index 2 = listing_id (u64)
+            if topics.len() < 3 {
+                continue;
+            }
+            let topic_name: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            let topic_swap_id: u64 = topics.get(1).unwrap().into_val(&env);
+            let topic_listing_id: u64 = topics.get(2).unwrap().into_val(&env);
+
+            if topic_name == soroban_sdk::Symbol::new(&env, "swap_initiated")
+                && topic_swap_id == swap_id
+                && topic_listing_id == listing_id
+            {
+                found = true;
+                break;
+            }
+        }
+
+        assert!(found, "SwapInitiated event was not emitted by initiate_swap");
+    }
 
     #[test]
     fn test_get_swap_status_returns_none_for_missing_swap() {
