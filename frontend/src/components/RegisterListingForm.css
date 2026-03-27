@@ -1,0 +1,135 @@
+/* ── RegisterListingForm ────────────────────────────────────────────────── */
+
+.rlf {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.rlf__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 0.5rem;
+}
+
+.rlf__desc {
+  color: #6b7280;
+  font-size: 0.875rem;
+  margin: 0 0 1.25rem;
+}
+
+.rlf__form fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.rlf__form fieldset[disabled] {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.rlf__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 0.25rem;
+  display: block;
+}
+
+.rlf__input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  background: white;
+}
+
+.rlf__input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.rlf__input--mono {
+  font-family: 'SF Mono', Menlo, Monaco, 'Cascadia Code', monospace;
+  font-size: 0.8rem;
+  letter-spacing: -0.01em;
+}
+
+.rlf__error {
+  padding: 0.625rem;
+  background: #fef2f2;
+  border: 1px solid #f87171;
+  border-radius: 6px;
+  color: #dc2626;
+  font-size: 0.8rem;
+  margin-top: -0.25rem;
+}
+
+.rlf__success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.rlf__success-msg {
+  color: #166534;
+  font-size: 0.9rem;
+  margin: 0 0 0.5rem;
+}
+
+.rlf__btn {
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.rlf__btn--primary {
+  background: #3b82f6;
+  color: white;
+}
+
+.rlf__btn--primary:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.rlf__btn--primary:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.rlf__btn--secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.rlf__btn--secondary:hover {
+  background: #e5e7eb;
+}
+
+@media (min-width: 640px) {
+  .rlf {
+    padding: 2rem;
+  }
+  
+  .rlf__title {
+    font-size: 1.25rem;
+  }
+}

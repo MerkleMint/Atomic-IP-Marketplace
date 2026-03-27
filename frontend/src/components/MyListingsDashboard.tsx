@@ -1,4 +1,4 @@
-import { useWallet } from "../context/WalletContext";
+
 import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
 import "./MyListingsDashboard.css";
@@ -16,6 +16,7 @@ export function MyListingsDashboard() {
   const { listings, loading, error, refresh } = useMyListings(
     wallet?.address ?? null,
   );
+  const [showRegisterForm, setShowRegisterForm] = useState(false);
 
   if (!wallet) {
     return (
@@ -36,7 +37,15 @@ export function MyListingsDashboard() {
   return (
     <section className="mld" aria-label="My Listings Dashboard">
       <div className="mld__header">
-        <h2 className="mld__title">My Listings</h2>
+        <div className="flex items-center gap-4 flex-wrap">
+          <h2 className="mld__title">My Listings</h2>
+          <button
+            className="mld__register-btn"
+            onClick={() => setShowRegisterForm(true)}
+          >
+            + New Listing
+          </button>
+        </div>
         <button
           className="mld__refresh-btn"
           onClick={refresh}
@@ -52,6 +61,18 @@ export function MyListingsDashboard() {
           {loading ? "Loading…" : "Refresh"}
         </button>
       </div>
+
+      {showRegisterForm && (
+        <div className="mld__register-section">
+          <RegisterListingForm 
+            wallet={wallet} 
+            onSuccess={(id) => {
+              setShowRegisterForm(false);
+              refresh();
+            }}
+          />
+        </div>
+      )}
 
       {error && (
         <p className="mld__error" role="alert">
