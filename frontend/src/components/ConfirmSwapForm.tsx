@@ -1,42 +1,33 @@
 import React, { useState } from "react";
 import { confirmSwap } from "../lib/contractClient";
+import type { Wallet } from "../lib/walletKit";
+import type { Swap } from "../hooks/useMySwaps";
 import "./ConfirmSwapForm.css";
 
-/**
- * ConfirmSwapForm
- *
- * Allows a seller to confirm a pending swap by submitting the decryption key,
- * which atomically releases USDC to the seller.
- *
- * Props:
- *   swap      - { id, listing_id, usdc_amount, status, buyer }
- *   wallet    - connected wallet { address, signTransaction }
- *   onSuccess - callback fired after successful confirmation
- */
-export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
+interface Props {
+  swap: Swap;
+  wallet: Wallet;
+  onSuccess: () => void;
+}
+
+export function ConfirmSwapForm({ swap, wallet, onSuccess }: Props) {
   const [decryptionKey, setDecryptionKey] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Only sellers with a pending swap should see this
   if (swap.status !== "Pending") return null;
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    if (!decryptionKey.trim()) {
-      setError("Decryption key cannot be empty.");
-      return;
-    }
-
+    if (!decryptionKey.trim()) { setError("Decryption key cannot be empty."); return; }
     setLoading(true);
     try {
       await confirmSwap(swap.id, decryptionKey.trim(), wallet);
       setDecryptionKey("");
       onSuccess();
     } catch (err) {
-      setError(err.message || "Failed to confirm swap. Please try again.");
+      setError(err instanceof Error ? err.message : "Failed to confirm swap.");
     } finally {
       setLoading(false);
     }
@@ -48,10 +39,7 @@ export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
         <span>Swap #{swap.id}</span>
         <span>{swap.usdc_amount} USDC</span>
       </div>
-
-      <label className="confirm-swap-form__label" htmlFor={`dk-${swap.id}`}>
-        Decryption Key
-      </label>
+      <label className="confirm-swap-form__label" htmlFor={`dk-${swap.id}`}>Decryption Key</label>
       <input
         id={`dk-${swap.id}`}
         className="confirm-swap-form__input"
@@ -63,24 +51,14 @@ export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
         autoComplete="off"
         spellCheck={false}
       />
-
-      {error && (
-        <p className="confirm-swap-form__error" role="alert">
-          {error}
-        </p>
-      )}
-
+      {error && <p className="confirm-swap-form__error" role="alert">{error}</p>}
       <button
         className="confirm-swap-form__btn"
         type="submit"
         disabled={loading || !decryptionKey.trim()}
         aria-busy={loading}
       >
-        {loading ? (
-          <span className="confirm-swap-spinner" aria-label="Confirming..." />
-        ) : (
-          "Confirm & Release USDC"
-        )}
+        {loading ? <span className="confirm-swap-spinner" aria-label="Confirming..." /> : "Confirm & Release USDC"}
       </button>
     </form>
   );

@@ -17,7 +17,7 @@ const networkPassphrase = () =>
  * Simulate a read-only contract call and return the raw ScVal result.
  * Uses a throwaway keypair as the source — no signing required.
  */
-async function simulateView(functionName, args) {
+async function simulateView(functionName: string, args: import("@stellar/stellar-sdk").xdr.ScVal[]) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -56,7 +56,7 @@ async function simulateView(functionName, args) {
  *   - Bytes → Buffer
  *   - Enum variant → { tag: string, values: [...] }
  */
-function decodeSwapScVal(scVal, swapId) {
+function decodeSwapScVal(scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined, swapId: number) {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
   const native = StellarSdk.scValToNative(scVal);
@@ -92,7 +92,7 @@ function decodeSwapScVal(scVal, swapId) {
  * @param {string} buyerAddress - Stellar public key (G...)
  * @returns {Promise<number[]>}
  */
-export async function getSwapsByBuyer(buyerAddress) {
+export async function getSwapsByBuyer(buyerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(buyerAddress),
     { type: "address" }
@@ -113,7 +113,7 @@ export async function getSwapsByBuyer(buyerAddress) {
  * @param {number} swapId
  * @returns {Promise<object|null>}
  */
-export async function getSwap(swapId) {
+export async function getSwap(swapId: number) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -152,13 +152,7 @@ export async function getSwap(swapId) {
  * Fetch the current ledger timestamp (unix seconds).
  * @returns {Promise<number>}
  */
-export async function getLedgerTimestamp() {
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
-  const latest = await server.getLatestLedger();
-  // getLatestLedger returns { id, protocolVersion, sequence }
-  // We approximate timestamp from sequence (not exact but sufficient for UI)
-  // Real approach: use server.getNetwork() or a known genesis timestamp
-  // For now return Date.now() / 1000 as a safe fallback
+export async function getLedgerTimestamp(): Promise<number> {
   return Math.floor(Date.now() / 1000);
 }
 
@@ -170,7 +164,7 @@ export async function getLedgerTimestamp() {
  * @param {object} wallet  - Connected wallet with signTransaction method
  * @returns {Promise<void>}
  */
-export async function cancelSwap(swapId, wallet) {
+export async function cancelSwap(swapId: number | string, wallet: {address:string; signTransaction:(xdr:string)=>Promise<string>}) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -201,7 +195,7 @@ export async function cancelSwap(swapId, wallet) {
  * @param {string} decryptionKey - hex or base64 string of the decryption key
  * @param {object} wallet        - { address, signTransaction }
  */
-export async function confirmSwap(swapId, decryptionKey, wallet) {
+export async function confirmSwap(swapId: number | string, decryptionKey: string, wallet: {address:string; signTransaction:(xdr:string)=>Promise<string>}) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -236,24 +230,28 @@ export async function confirmSwap(swapId, decryptionKey, wallet) {
 
 // ─── Shared submit helper ─────────────────────────────────────────────────────
 
-async function submitAndPoll(tx, wallet, server) {
+async function submitAndPoll(
+  tx: import("@stellar/stellar-sdk").Transaction,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> },
+  server: import("@stellar/stellar-sdk").SorobanRpc.Server
+) {
   const preparedTx = await server.prepareTransaction(tx);
-
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
   const signedTx = StellarSdk.TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
 
-  const result = await server.sendTransaction(signedTx);
-  if (result.status === "ERROR") {
-    throw new Error(`Transaction failed: ${result.errorResult}`);
+  const sendResult = await server.sendTransaction(signedTx);
+  if (sendResult.status === "ERROR") {
+    throw new Error(`Transaction failed: ${sendResult.errorResult}`);
   }
 
-  let response = result;
-  while (response.status === "PENDING" || response.status === "NOT_FOUND") {
+  // Poll until the transaction leaves NOT_FOUND state
+  let txResponse = await server.getTransaction(sendResult.hash);
+  while (txResponse.status === "NOT_FOUND") {
     await new Promise((r) => setTimeout(r, 1500));
-    response = await server.getTransaction(result.hash);
+    txResponse = await server.getTransaction(sendResult.hash);
   }
 
-  if (response.status !== "SUCCESS") {
-    throw new Error(`Transaction did not succeed: ${response.status}`);
+  if (txResponse.status !== "SUCCESS") {
+    throw new Error(`Transaction did not succeed: ${txResponse.status}`);
   }
 }

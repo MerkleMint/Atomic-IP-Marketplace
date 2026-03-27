@@ -1,15 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
-
-/// Emitted when a Merkle root is set or updated for a listing.
-#[contractevent]
-pub struct MerkleRootSet {
-    #[topic]
-    pub listing_id: u64,
-    #[topic]
-    pub owner: Address,
-    pub merkle_root: BytesN<32>,
-}
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -52,12 +42,12 @@ impl ZkVerifier {
             }
         } else {
             env.storage().persistent().set(&owner_key, &owner);
-            env.storage().persistent().extend_ttl(
-                &owner_key,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
         }
+        env.storage().persistent().extend_ttl(
+            &owner_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
         let key = DataKey::MerkleRoot(listing_id);
         env.storage().persistent().set(&key, &root);
         env.storage()
@@ -109,6 +99,31 @@ impl ZkVerifier {
             current = env.crypto().sha256(&combined).into();
         }
         current == root
+    }
+
+    /// Transfer ownership of a listing's Merkle root to a new owner.
+    pub fn transfer_root_ownership(
+        env: Env,
+        current_owner: Address,
+        listing_id: u64,
+        new_owner: Address,
+    ) {
+        current_owner.require_auth();
+        let owner_key = DataKey::Owner(listing_id);
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized));
+        if stored != current_owner {
+            soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        env.storage().persistent().set(&owner_key, &new_owner);
+        env.storage().persistent().extend_ttl(
+            &owner_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
     }
 }
 
@@ -164,6 +179,47 @@ mod test {
     }
 
     #[test]
+    fn test_owner_ttl_extended_on_root_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let root1: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"root_v1"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root1);
+
+        // Advance ledger close to TTL expiry
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // Update root — must also refresh Owner TTL
+        let root2: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"root_v2"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root2);
+
+        // Advance again; owner key should still be alive (TTL was re-extended)
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // A different caller must still be rejected — owner key is alive
+        let attacker = Address::generate(&env);
+        let fake_root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"fake"))
+            .into();
+        let result = std::panic::catch_unwind(|| {
+            client.set_merkle_root(&attacker, &1u64, &fake_root);
+        });
+        assert!(result.is_err(), "attacker should be rejected while owner key is alive");
+    }
+
+    #[test]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -185,31 +241,50 @@ mod test {
     }
 
     #[test]
-    fn test_set_merkle_root_emits_event() {
+    fn test_verify_partial_proof_missing_root_returns_false() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+        let leaf = Bytes::from_slice(&env, b"leaf");
+        let path: Vec<ProofNode> = Vec::new(&env);
+        assert!(!client.verify_partial_proof(&99u64, &leaf, &path));
+    }
+
+    #[test]
+    fn test_transfer_root_ownership_success() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ZkVerifier, ());
         let client = ZkVerifierClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"ip_asset:v1");
-        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        let new_owner = Address::generate(&env);
+        let root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"leaf")).into();
+        client.set_merkle_root(&owner, &1u64, &root);
 
-        client.set_merkle_root(&owner, &7u64, &root);
+        client.transfer_root_ownership(&owner, &1u64, &new_owner);
 
-        let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        // new_owner can now update the root; old owner cannot
+        let new_root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"new")).into();
+        client.set_merkle_root(&new_owner, &1u64, &new_root);
+        assert_eq!(client.get_merkle_root(&1u64), Some(new_root));
+    }
 
-        let (_, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) =
-            events.first().unwrap();
+    #[test]
+    fn test_transfer_root_ownership_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
 
-        // topics[0] = listing_id, topics[1] = owner (per #[contractevent] #[topic] ordering)
-        let emitted_listing_id: u64 = soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
-        let emitted_owner: Address = soroban_sdk::FromVal::from_val(&env, &topics.get(1).unwrap());
-        let emitted_root: BytesN<32> = soroban_sdk::FromVal::from_val(&env, &data);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"leaf")).into();
+        client.set_merkle_root(&owner, &1u64, &root);
 
-        assert_eq!(emitted_listing_id, 7u64);
-        assert_eq!(emitted_owner, owner);
-        assert_eq!(emitted_root, root);
+        let result = client.try_transfer_root_ownership(&attacker, &1u64, &new_owner);
+        assert!(result.is_err());
     }
 }
