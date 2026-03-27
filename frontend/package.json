@@ -14,7 +14,9 @@
     "@stellar/freighter-api": "^3.0.0",
     "@stellar/stellar-sdk": "^12.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.17.0",
+    "lucide-react": "^0.517.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.1",

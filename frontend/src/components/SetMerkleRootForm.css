@@ -1,0 +1,205 @@
+.smrf {
+  border: 1.5px solid #e8e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 1rem;
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+
+.smrf__tabs {
+  display: flex;
+  border-bottom: 1.5px solid #e8e8f0;
+  background: #f9f9fc;
+}
+
+.smrf__tab {
+  flex: 1;
+  padding: 0.6rem 1rem;
+  border: none;
+  background: transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.smrf__tab:hover {
+  background: #f0f0f8;
+  color: #333;
+}
+
+.smrf__tab--active {
+  color: #6c63ff;
+  border-bottom: 2px solid #6c63ff;
+  background: #fff;
+}
+
+/* ── Form ─────────────────────────────────────────────────────────────────── */
+
+.smrf__form {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.smrf__desc {
+  font-size: 0.82rem;
+  color: #666;
+  margin: 0;
+}
+
+.smrf__label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.smrf__input {
+  padding: 0.5rem 0.7rem;
+  border: 1.5px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  transition: border-color 0.15s;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.smrf__input:focus {
+  outline: none;
+  border-color: #6c63ff;
+}
+
+.smrf__input--mono {
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+/* ── Proof nodes ──────────────────────────────────────────────────────────── */
+
+.smrf__nodes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.smrf__nodes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.smrf__node {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.smrf__node-index {
+  font-size: 0.75rem;
+  color: #999;
+  min-width: 1.5rem;
+}
+
+.smrf__input--sibling {
+  flex: 1;
+  min-width: 0;
+}
+
+.smrf__node-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #555;
+  white-space: nowrap;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+
+.smrf__btn {
+  padding: 0.5rem 1.1rem;
+  border-radius: 8px;
+  border: none;
+  background: #6c63ff;
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  align-self: flex-start;
+}
+
+.smrf__btn:hover:not(:disabled) {
+  background: #574fd6;
+}
+
+.smrf__btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.smrf__btn--sm {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.smrf__btn--remove {
+  background: transparent;
+  color: #e05252;
+  border: 1px solid #e05252;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.smrf__btn--remove:hover {
+  background: #ffeaea;
+}
+
+/* ── Status messages ──────────────────────────────────────────────────────── */
+
+.smrf__error {
+  font-size: 0.82rem;
+  color: #b91c1c;
+  background: #fff0f0;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  margin: 0;
+}
+
+.smrf__success {
+  font-size: 0.82rem;
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  margin: 0;
+}
+
+.smrf__verify-result {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  margin: 0;
+}
+
+.smrf__verify-result--valid {
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+}
+
+.smrf__verify-result--invalid {
+  color: #b91c1c;
+  background: #fff0f0;
+  border: 1px solid #fca5a5;
+}

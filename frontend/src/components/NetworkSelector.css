@@ -1,0 +1,43 @@
+.ns {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ns__label {
+  font-size: 0.82rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.ns__select {
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  border: 1.5px solid #d1d5db;
+  font-size: 0.85rem;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.ns__select:focus {
+  outline: none;
+  border-color: #6c63ff;
+}
+
+.ns__select--mainnet {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  font-weight: 600;
+}
+
+.ns__warn {
+  font-size: 0.78rem;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+}

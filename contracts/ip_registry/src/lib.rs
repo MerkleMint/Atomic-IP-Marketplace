@@ -18,6 +18,7 @@ pub enum ContractError {
     NotInitialized = 6,
     AlreadyInitialized = 7,
     InvalidPrice = 8,
+    ContractPaused = 9,
 }
 
 
@@ -73,6 +74,7 @@ pub enum DataKey {
     Counter,
     OwnerIndex(Address),
     Config,
+    Paused,
 }
 
 #[contractevent]
@@ -84,13 +86,12 @@ pub struct IpDeregistered {
 }
 
 #[contractevent]
-pub struct IpRegistered {
+pub struct ListingRegistered {
     #[topic]
     pub listing_id: u64,
     #[topic]
     pub owner: Address,
     pub ipfs_hash: Bytes,
-    pub merkle_root: Bytes,
 }
 
 #[contractevent]
@@ -120,6 +121,20 @@ pub struct OwnershipTransferred {
     pub to: Address,
 }
 
+/// Emitted when the contract is paused by the admin.
+#[contractevent]
+pub struct ContractPausedEvent {
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the contract is unpaused by the admin.
+#[contractevent]
+pub struct ContractUnpausedEvent {
+    #[topic]
+    pub admin: Address,
+}
+
 #[contract]
 pub struct IpRegistry;
 
@@ -134,6 +149,17 @@ fn extend_persistent(env: &Env, key: &DataKey, cfg: &Config) {
     env.storage()
         .persistent()
         .extend_ttl(key, cfg.ttl_threshold, cfg.ttl_extend_to);
+}
+
+fn assert_not_paused(env: &Env) {
+    let paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if paused {
+        panic_with_error!(env, ContractError::ContractPaused);
+    }
 }
 
 #[contractimpl]
@@ -185,6 +211,38 @@ impl IpRegistry {
         Ok(())
     }
 
+    /// Admin-only: pause the contract. Blocks new IP registrations.
+    pub fn pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .map(|cfg: Config| cfg.admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.storage()
+            .instance()
+            .extend_ttl(100_000, 6_312_000);
+        ContractPausedEvent { admin }.publish(&env);
+    }
+
+    /// Admin-only: unpause the contract. Allows IP registrations to resume.
+    pub fn unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .map(|cfg: Config| cfg.admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .extend_ttl(100_000, 6_312_000);
+        ContractUnpausedEvent { admin }.publish(&env);
+    }
+
     pub fn register_ip(
         env: Env,
         owner: Address,
@@ -194,6 +252,7 @@ impl IpRegistry {
         royalty_recipient: Address,
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
+        assert_not_paused(&env);
         if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
         {
             return Err(ContractError::InvalidInput);
@@ -243,11 +302,10 @@ impl IpRegistry {
             .instance()
             .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
 
-        IpRegistered {
+        ListingRegistered {
             listing_id: id,
             owner,
             ipfs_hash,
-            merkle_root,
         }
         .publish(&env);
 
@@ -255,6 +313,7 @@ impl IpRegistry {
     }
 
     pub fn batch_register_ip(env: Env, owner: Address, entries: Vec<IpEntry>) -> Vec<u64> {
+        assert_not_paused(&env);
         let mut i: u32 = 0;
         while i < entries.len() {
             let (ipfs_hash, merkle_root, royalty_bps, _royalty_recipient, price_usdc) = entries.get(i).unwrap();
@@ -317,11 +376,10 @@ impl IpRegistry {
             ipfs_hashes.push_back(ipfs_hash.clone());
             merkle_roots.push_back(merkle_root.clone());
 
-            IpRegistered {
+            ListingRegistered {
                 listing_id: id,
                 owner: owner.clone(),
                 ipfs_hash,
-                merkle_root,
             }
             .publish(&env);
 
@@ -392,6 +450,7 @@ impl IpRegistry {
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
     ) {
+        assert_not_paused(&env);
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -531,7 +590,7 @@ impl IpRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Ledger as _, Events},
         Env,
     };
 
@@ -955,5 +1014,141 @@ mod test {
 
         let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
+    }
+
+    // ── Pause/Unpause tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_pause_emits_event() {
+        let (env, client, _admin) = setup();
+        client.pause();
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert!(
+            !events.events().is_empty(),
+            "ContractPausedEvent not emitted"
+        );
+    }
+
+    #[test]
+    fn test_unpause_emits_event() {
+        let (env, client, _admin) = setup();
+        client.pause();
+        client.unpause();
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert!(
+            !events.events().is_empty(),
+            "ContractUnpausedEvent not emitted"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_register_ip_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        client.pause();
+        client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &1000i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_batch_register_ip_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+        ));
+        client.pause();
+        client.batch_register_ip(&owner, &entries);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_update_listing_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"QmHashNew"),
+            &Bytes::from_slice(&env, b"rootNew"),
+        );
+    }
+
+    #[test]
+    fn test_register_ip_allowed_after_unpause() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        client.pause();
+        client.unpause();
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        assert_eq!(id, 1);
+        assert!(client.get_listing(&id).is_some());
+    }
+
+    #[test]
+    fn test_deregister_listing_allowed_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        // Deregister should succeed even when paused (read-only operation)
+        client.deregister_listing(&owner, &id);
+        assert!(client.get_listing(&id).is_none());
+    }
+
+    #[test]
+    fn test_get_listing_allowed_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        // Get should succeed even when paused (read-only operation)
+        assert!(client.get_listing(&id).is_some());
+    }
+
+    #[test]
+    fn test_register_ip_emits_listing_registered() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let hash = b"QmHash";
+        let root = b"root";
+        let price = 1000i128;
+
+        client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, hash),
+            &Bytes::from_slice(&env, root),
+            &0u32,
+            &owner,
+            &price,
+        );
+
+        let events = env.events().all().filter_by_contract(&client.address);
+        let event = events.events().last().expect("event should be emitted");
+
+        // topics[0] is the symbol of the event struct name
+        assert_eq!(
+            event.1.get(0).unwrap(),
+            soroban_sdk::Symbol::new(&env, "ListingRegistered").into_val(&env)
+        );
+        // topics[1] is listing_id
+        assert_eq!(event.1.get(1).unwrap(), 1u64.into_val(&env));
+        // topics[2] is owner
+        assert_eq!(event.1.get(2).unwrap(), owner.into_val(&env));
+
+        // value contains the non-topic fields
+        assert_eq!(event.2, Bytes::from_slice(&env, hash).into_val(&env));
     }
 }

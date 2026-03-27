@@ -125,6 +125,4 @@ This project is licensed under the Apache License 2.0. See the [LICENSE](./LICEN
 
 ---
 
-*Workspace using Soroban SDK v25.3.0*
-
-new
+*Workspace using pinned Soroban SDK v25.3.0 and soroban-poseidon v25.0.1*

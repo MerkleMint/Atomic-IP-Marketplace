@@ -6,19 +6,29 @@ import {
   ISupportedWallet,
 } from '@creit.tech/stellar-wallets-kit';
 
-export { FREIGHTER_ID };
+export { FREIGHTER_ID, WalletNetwork };
 export type { ISupportedWallet };
 
-const network =
-  import.meta.env.VITE_STELLAR_NETWORK === 'mainnet'
-    ? WalletNetwork.PUBLIC
-    : WalletNetwork.TESTNET;
+const initialNetwork =
+  (() => {
+    const saved = localStorage.getItem('selected_network');
+    return saved === 'mainnet' ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET;
+  })();
 
-export const kit = new StellarWalletsKit({
-  network,
+export let kit = new StellarWalletsKit({
+  network: initialNetwork,
   selectedWalletId: FREIGHTER_ID,
   modules: allowAllModules(),
 });
+
+/** Recreate the kit with a new network (called by NetworkContext on switch). */
+export function reinitKit(network: WalletNetwork): void {
+  kit = new StellarWalletsKit({
+    network,
+    selectedWalletId: FREIGHTER_ID,
+    modules: allowAllModules(),
+  });
+}
 
 export interface Wallet {
   address: string;
@@ -33,6 +43,7 @@ export async function connectWallet(walletId: string): Promise<Wallet> {
     address,
     walletId,
     signTransaction: async (xdr: string) => {
+      // Use kit at call time (may have been reinitialized)
       const { signedTxXdr } = await kit.signTransaction(xdr, { address });
       return signedTxXdr;
     },

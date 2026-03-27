@@ -39,6 +39,8 @@ pub enum ContractError {
     InvalidPaginationParams = 17,
     /// Cancel delay has not yet elapsed since swap creation.
     CancelTooEarly = 18,
+    /// release_to_seller called before the dispute window has expired.
+    DisputeWindowActive = 19,
 }
 
 #[contracttype]
@@ -471,10 +473,9 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::DisputeWindowLedgers)
             .unwrap_or(DEFAULT_DISPUTE_WINDOW_LEDGERS);
-        assert!(
-            env.ledger().sequence() > confirmed_at + window,
-            "dispute window has not yet expired"
-        );
+        if env.ledger().sequence() <= confirmed_at + window {
+            panic_with_error!(&env, ContractError::DisputeWindowActive);
+        }
 
         let usdc = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
@@ -684,7 +685,9 @@ impl AtomicSwap {
 
     /// Paginated variant of `get_swaps_by_buyer`.
     /// Returns up to `limit` swap IDs starting at `offset`.
-    /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` exceeds the list length.
+    /// Returns an empty Vec when `offset == total` (valid cursor-past-end state).
+    /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` is strictly
+    /// greater than the list length.
     pub fn get_swaps_by_buyer_page(
         env: Env,
         buyer: Address,
@@ -700,6 +703,8 @@ impl AtomicSwap {
             .get(&DataKey::BuyerIndex(buyer))
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
         let total = all.len();
+        // offset == total is a valid cursor-past-end: return empty without panicking.
+        // Only panic when offset is strictly beyond the list.
         if offset > total {
             panic_with_error!(&env, ContractError::InvalidPaginationParams);
         }
@@ -1571,6 +1576,40 @@ mod test {
     }
 
     #[test]
+    fn test_release_to_seller_before_window_expires_returns_dispute_window_active() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        // Set a 10-ledger dispute window
+        client.set_dispute_window(&10u32);
+        let swap_id = confirmed_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+        );
+
+        // Advance only 5 ledgers — window has NOT expired yet
+        env.ledger().with_mut(|li| li.sequence_number += 5);
+
+        let result = client.try_release_to_seller(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::DisputeWindowActive as u32
+            )))
+        );
+    }
+
+    #[test]
     fn test_resolve_dispute_favor_buyer_refunds_usdc() {
         let env = Env::default();
         env.mock_all_auths();
@@ -2056,14 +2095,25 @@ mod test {
 
     #[test]
     fn test_get_swaps_by_buyer_page_offset_at_end() {
+        // offset == total is a valid cursor-past-end state: must return an empty Vec,
+        // not panic with InvalidPaginationParams.
         let env = Env::default();
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
-            setup_full(&env, &buyer, &seller, 500, 500);
-        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
-        // offset == len returns empty page
+            setup_full(&env, &buyer, &seller, 500, 1);
+        pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+        // 1 swap in the list; offset=1 == total=1 → empty page, no panic
         let page = client.get_swaps_by_buyer_page(&buyer, &1u32, &10u32);
         assert_eq!(page.len(), 0);
     }

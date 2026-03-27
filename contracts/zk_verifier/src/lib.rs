@@ -51,7 +51,12 @@ pub struct ZkVerifier;
 #[contractimpl]
 impl ZkVerifier {
     /// Store the Merkle root for a listing. Only the listing owner can set or overwrite it.
-    pub fn set_merkle_root(env: Env, owner: Address, listing_id: u64, root: BytesN<32>) {
+    pub fn set_merkle_root(
+        env: Env,
+        owner: Address,
+        listing_id: u64,
+        root: BytesN<32>,
+    ) -> Result<(), ContractError> {
         owner.require_auth();
         let owner_key = DataKey::Owner(listing_id);
         if let Some(existing_owner) = env
@@ -60,7 +65,7 @@ impl ZkVerifier {
             .get::<DataKey, Address>(&owner_key)
         {
             if existing_owner != owner {
-                soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized);
+                return Err(ContractError::Unauthorized);
             }
         } else {
             env.storage().persistent().set(&owner_key, &owner);
@@ -84,6 +89,7 @@ impl ZkVerifier {
             merkle_root: root,
         }
         .publish(&env);
+        Ok(())
     }
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
@@ -277,8 +283,9 @@ mod test {
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
         let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
-        assert!(
-            result.is_err(),
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::Unauthorized)),
             "attacker should not be able to overwrite owner's root"
         );
     }

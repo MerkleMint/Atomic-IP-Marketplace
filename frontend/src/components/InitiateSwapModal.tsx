@@ -170,12 +170,12 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
             {error && <p className="ism__error" role="alert">{error}</p>}
 
             <div className="ism__steps">
-              <div className={`ism__step ${step === "approving" ? "ism__step--active" : ""} ${(step === "initiating" || step === "success") ? "ism__step--done" : ""}`}>
+              <div className={`ism__step ${step === "approving" ? "ism__step--active" : ""} ${step === "initiating" ? "ism__step--done" : ""}`}>
                 <span className="ism__step-num">1</span>
                 <span>Approve USDC</span>
                 {step === "approving" && <span className="ism__spinner" aria-hidden="true" />}
               </div>
-              <div className={`ism__step ${step === "initiating" ? "ism__step--active" : ""} ${step === "success" ? "ism__step--done" : ""}`}>
+              <div className={`ism__step ${step === "initiating" ? "ism__step--active" : ""}`}>
                 <span className="ism__step-num">2</span>
                 <span>Initiate Swap</span>
                 {step === "initiating" && <span className="ism__spinner" aria-hidden="true" />}
