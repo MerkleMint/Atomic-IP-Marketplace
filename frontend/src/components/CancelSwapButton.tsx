@@ -38,7 +38,8 @@ export function CancelSwapButton({ swap, ledgerTimestamp, wallet, onSuccess }: P
     <div className="cancel-swap-wrapper">
       {isExpired ? (
         <button className="cancel-swap-btn" onClick={handleCancel} disabled={loading} aria-busy={loading}>
-          {loading ? <span className="cancel-swap-spinner" aria-label="Cancelling..." /> : "Cancel Swap"}
+          {loading && <span className="cancel-swap-spinner" aria-hidden="true" />}
+          {loading ? "Cancelling…" : "Cancel Swap"}
         </button>
       ) : (
         <div className="cancel-swap-countdown" aria-label="Time until cancellable">

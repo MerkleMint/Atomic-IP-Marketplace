@@ -1,4 +1,3 @@
-import React from "react";
 import { useWallet } from "../context/WalletContext";
 import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
@@ -15,14 +14,16 @@ import "./MyListingsDashboard.css";
 export function MyListingsDashboard() {
   const { wallet } = useWallet();
   const { listings, loading, error, refresh } = useMyListings(
-    wallet?.address ?? null
+    wallet?.address ?? null,
   );
 
   if (!wallet) {
     return (
       <section className="mld" aria-label="My Listings Dashboard">
         <div className="mld__empty mld__empty--disconnected">
-          <span className="mld__empty-icon" aria-hidden="true">🔌</span>
+          <span className="mld__empty-icon" aria-hidden="true">
+            🔌
+          </span>
           <p>Connect your wallet to view your listings.</p>
         </div>
       </section>
@@ -70,7 +71,9 @@ export function MyListingsDashboard() {
       {/* Empty state */}
       {!loading && listings.length === 0 && !error && (
         <div className="mld__empty">
-          <span className="mld__empty-icon" aria-hidden="true">📂</span>
+          <span className="mld__empty-icon" aria-hidden="true">
+            📂
+          </span>
           <p>No listings found for this wallet.</p>
         </div>
       )}

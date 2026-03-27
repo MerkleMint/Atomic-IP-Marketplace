@@ -58,7 +58,8 @@ export function ConfirmSwapForm({ swap, wallet, onSuccess }: Props) {
         disabled={loading || !decryptionKey.trim()}
         aria-busy={loading}
       >
-        {loading ? <span className="confirm-swap-spinner" aria-label="Confirming..." /> : "Confirm & Release USDC"}
+        {loading && <span className="confirm-swap-spinner" aria-hidden="true" />}
+        {loading ? "Confirming…" : "Confirm & Release USDC"}
       </button>
     </form>
   );

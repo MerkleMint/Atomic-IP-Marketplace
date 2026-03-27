@@ -1,9 +1,23 @@
-import React from "react";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import "./ListingCard.css";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
+
+interface IListingCard {
+  listing: {
+    id: number;
+    ipfs_hash: string;
+    price_usdc: number;
+    pendingSwaps: any[];
+  };
+  wallet: {
+    walletId: string;
+    address: string;
+    signTransaction: (tx: any) => Promise<any>;
+  };
+  onUpdated: () => void;
+}
 
 /**
  * ListingCard
@@ -16,7 +30,7 @@ const IPFS_GATEWAY =
  *   wallet   - connected wallet { address, signTransaction }
  *   onUpdated - callback to refresh data after a swap action
  */
-export function ListingCard({ listing, wallet, onUpdated }) {
+export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
   const ipfsUrl = listing.ipfs_hash
     ? `${IPFS_GATEWAY}/${listing.ipfs_hash}`
     : null;
@@ -26,7 +40,9 @@ export function ListingCard({ listing, wallet, onUpdated }) {
       <div className="lc__header">
         <span className="lc__id">Listing #{listing.id}</span>
         {listing.price_usdc > 0 && (
-          <span className="lc__price">{listing.price_usdc / 1_000_000} USDC</span>
+          <span className="lc__price">
+            {listing.price_usdc / 1_000_000} USDC
+          </span>
         )}
       </div>
 

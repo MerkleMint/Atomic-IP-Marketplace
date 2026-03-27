@@ -22,11 +22,11 @@ const POLL_INTERVAL_MS = 15_000;
  *   refresh: () => void,
  * }}
  */
-export function useMyListings(ownerAddress) {
-  const [listings, setListings] = useState([]);
+export function useMyListings(ownerAddress: string | null) {
+  const [listings, setListings] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const timerRef = useRef(null);
+  const timerRef = useRef<any>(null);
 
   const fetchListings = useCallback(async () => {
     if (!ownerAddress) {
@@ -56,24 +56,22 @@ export function useMyListings(ownerAddress) {
       ]);
 
       const loadedListings = listingResults
-        .filter((r) => r.status === "fulfilled" && r.value !== null)
-        .map((r) => r.value);
+        .filter((r: any) => r.status === "fulfilled" && r.value !== null)
+        .map((r: any) => r.value);
 
       const allSellerSwaps = swapResults
-        .filter((r) => r.status === "fulfilled" && r.value !== null)
-        .map((r) => r.value)
+        .filter((r: any) => r.status === "fulfilled" && r.value !== null)
+        .map((r: any) => r.value)
         .filter((s) => s.status === "Pending");
 
       // Attach pending swaps to their respective listing
       const enriched = loadedListings.map((listing) => ({
         ...listing,
-        pendingSwaps: allSellerSwaps.filter(
-          (s) => s.listing_id === listing.id
-        ),
+        pendingSwaps: allSellerSwaps.filter((s) => s.listing_id === listing.id),
       }));
 
       setListings(enriched);
-    } catch (err) {
+    } catch (err: any) {
       setError(err.message || "Failed to load listings.");
     } finally {
       setLoading(false);
