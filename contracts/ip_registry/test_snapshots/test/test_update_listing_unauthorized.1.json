@@ -19,10 +19,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bytes": "516d4f6c64"
+                  "bytes": "516d48617368"
                 },
                 {
-                  "bytes": "6f6c645f726f6f74"
+                  "bytes": "726f6f74"
                 },
                 {
                   "u32": 0
@@ -65,8 +65,7 @@
           "sub_invocations": []
         }
       ]
-    ],
-    []
+    ]
   ],
   "ledger": {
     "protocol_version": 25,

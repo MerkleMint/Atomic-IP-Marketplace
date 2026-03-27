@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0,
     "mux_id": 0
   },
@@ -13,25 +13,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "register_ip",
+              "function_name": "set_merkle_root",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bytes": "516d4f6c64"
+                  "u64": "1"
                 },
                 {
-                  "bytes": "6f6c645f726f6f74"
-                },
-                {
-                  "u32": 0
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
-                  "i128": "0"
+                  "bytes": "ee30dac87c2d48e9e8e34d46a7c7af68efbf930ba29b7bcc18e9b250db93b813"
                 }
               ]
             }
@@ -47,18 +38,17 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "update_listing",
+              "function_name": "set_merkle_root",
               "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
                 {
                   "u64": "1"
                 },
                 {
-                  "bytes": "516d4e6577"
-                },
-                {
-                  "bytes": "6e65775f726f6f74"
-                },
-                "void"
+                  "bytes": "c1fe494be0d794bcaa54f053d731df1d6b333f6589ec6fbc9055eb37902d89b4"
+                }
               ]
             }
           },
@@ -70,7 +60,7 @@
   ],
   "ledger": {
     "protocol_version": 25,
-    "sequence_number": 0,
+    "sequence_number": 12623998,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -88,19 +78,22 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Counter"
+                    "symbol": "MerkleRoot"
+                  },
+                  {
+                    "u64": "1"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
-                "u64": "1"
+                "bytes": "c1fe494be0d794bcaa54f053d731df1d6b333f6589ec6fbc9055eb37902d89b4"
               }
             }
           },
           "ext": "v0"
         },
-        "live_until": 6311999
+        "live_until": 12623998
       },
       {
         "entry": {
@@ -112,7 +105,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Listing"
+                    "symbol": "Owner"
                   },
                   {
                     "u64": "1"
@@ -121,93 +114,13 @@
               },
               "durability": "persistent",
               "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "ipfs_hash"
-                    },
-                    "val": {
-                      "bytes": "516d4e6577"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "merkle_root"
-                    },
-                    "val": {
-                      "bytes": "6e65775f726f6f74"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "owner"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "price_usdc"
-                    },
-                    "val": {
-                      "i128": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "royalty_bps"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "royalty_recipient"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                    }
-                  }
-                ]
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
               }
             }
           },
           "ext": "v0"
         },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "OwnerIndex"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "vec": [
-                  {
-                    "u64": "1"
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
+        "live_until": 12623998
       },
       {
         "entry": {
@@ -230,7 +143,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 6311999
+        "live_until": 12623998
       },
       {
         "entry": {
@@ -270,7 +183,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 6311999
+        "live_until": 12623998
       },
       {
         "entry": {
@@ -284,7 +197,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 6311999
+        "live_until": 12623998
       }
     ]
   },
