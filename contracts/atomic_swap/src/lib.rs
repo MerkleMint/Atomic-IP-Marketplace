@@ -41,6 +41,8 @@ pub enum ContractError {
     CancelTooEarly = 18,
     /// release_to_seller called before the dispute window has expired.
     DisputeWindowActive = 19,
+    /// The provided token is not in the allowed list.
+    InvalidToken = 20,
 }
 
 #[contracttype]
@@ -90,6 +92,7 @@ pub enum DataKey {
     Admin,
     Paused,
     DisputeWindowLedgers,
+    AllowedToken(Address),
 }
 
 #[contractevent]
@@ -206,6 +209,18 @@ impl AtomicSwap {
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
+    pub fn add_allowed_token(env: Env, token: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllowedToken(token), &true);
+    }
+
     pub fn set_dispute_window(env: Env, ledgers: u32) {
         let admin: Address = env
             .storage()
@@ -298,6 +313,14 @@ impl AtomicSwap {
         buyer.require_auth();
         if usdc_amount <= 0 {
             env.panic_with_error(ContractError::InvalidAmount);
+        }
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::AllowedToken(usdc_token.clone()))
+            .unwrap_or(false)
+        {
+            env.panic_with_error(ContractError::InvalidToken);
         }
 
         let config: Config = env
@@ -839,6 +862,7 @@ mod test {
         let fee_recipient = Address::generate(env);
         let zk_id = env.register(ZkVerifier, ());
         client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
+        client.add_allowed_token(&usdc_id);
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
     }
 
@@ -2160,5 +2184,32 @@ mod test {
         pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
         // offset=2 on a list of 1 should panic
         client.get_swaps_by_buyer_page(&buyer, &2u32, &10u32);
+    }
+
+    // ── Issue #252 regression test ────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #20)")]
+    fn test_initiate_swap_invalid_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_, listing_id, registry_id, _, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+
+        // Use a random address that was never added as an allowed token
+        let bad_token = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &bad_token,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
     }
 }
