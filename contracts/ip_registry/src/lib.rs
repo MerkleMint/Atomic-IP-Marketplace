@@ -15,6 +15,8 @@ pub enum ContractError {
     ListingNotFound = 3,
     PendingSwapExists = 4,
     Unauthorized = 5,
+    AlreadyInitialized = 6,
+    NotInitialized = 7,
 }
 
 /// Minimal interface to check for a pending swap on a listing.
@@ -381,12 +383,11 @@ impl IpRegistry {
         listing.ipfs_hash = new_ipfs_hash;
         listing.merkle_root = new_merkle_root;
         env.storage().persistent().set(&key, &listing);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        let cfg = get_config(&env);
+        extend_persistent(&env, &key, &cfg);
         env.storage()
             .instance()
-            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -850,5 +851,47 @@ mod test {
             &1000i128,
         );
         assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn test_transfer_listing_ownership_success() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 500);
+
+        client.transfer_listing_ownership(&owner, &id, &new_owner);
+
+        let listing = client.get_listing(&id).expect("listing should exist");
+        assert_eq!(listing.owner, new_owner);
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert_eq!(client.list_by_owner(&new_owner).len(), 1);
+        assert_eq!(client.list_by_owner(&new_owner).get(0).unwrap(), id);
+    }
+
+    #[test]
+    fn test_transfer_listing_ownership_unauthorized() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 0);
+
+        let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+
+        // Ownership unchanged
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_transfer_listing_ownership_not_found() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+
+        let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
     }
 }
