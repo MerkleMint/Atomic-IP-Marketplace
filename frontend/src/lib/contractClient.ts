@@ -109,44 +109,15 @@ export async function getSwapsByBuyer(buyerAddress: string) {
 }
 
 /**
- * Fetch full swap details for a single swap ID.
- * Reads the Swap struct from contract storage via getLedgerEntries.
+ * Fetch full swap details for a single swap ID using get_swap contract function.
+ * Task 1: single call replaces multiple get_swap_status + get_decryption_key calls.
  * @param {number} swapId
  * @returns {Promise<object|null>}
  */
 export async function getSwap(swapId: number) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
-    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  }
-
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
-
-  // Build the DataKey::Swap(swapId) storage key
-  // DataKey::Swap(u64) encodes as a Vec<ScVal> = [Symbol("Swap"), u64]
-  const dataKey = StellarSdk.xdr.ScVal.scvVec([
-    StellarSdk.xdr.ScVal.scvSymbol("Swap"),
-    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
-  ]);
-
-  const contractId = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID).contractId();
-
-  const ledgerKey = StellarSdk.xdr.LedgerKey.contractData(
-    new StellarSdk.xdr.LedgerKeyContractData({
-      contract: new StellarSdk.Address(contractId).toScAddress(),
-      key: dataKey,
-      durability: StellarSdk.xdr.ContractDataDurability.persistent(),
-    })
-  );
-
-  const response = await server.getLedgerEntries(ledgerKey);
-
-  if (!response.entries || response.entries.length === 0) return null;
-
-  const entry = response.entries[0];
-  const contractData = entry.val.contractData();
-  const swapScVal = contractData.val();
-
-  return decodeSwapScVal(swapScVal, swapId);
+  const swapIdScVal = StellarSdk.nativeToScVal(swapId, { type: "u64" });
+  const retval = await simulateView("get_swap", [swapIdScVal]);
+  return decodeSwapScVal(retval, swapId);
 }
 
 /**

@@ -208,13 +208,12 @@ mod test {
             .crypto()
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
-        let result = std::panic::catch_unwind(|| {
-            client.set_merkle_root(&attacker, &1u64, &fake_root);
-        });
+        let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
         assert!(result.is_err(), "attacker should be rejected while owner key is alive");
     }
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
