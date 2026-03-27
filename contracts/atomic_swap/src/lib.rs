@@ -304,8 +304,18 @@ impl AtomicSwap {
             &usdc_amount,
         );
 
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
-        env.storage().instance().set(&DataKey::Counter, &id);
+        let id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Counter)
+            .unwrap_or(0_u64)
+            + 1;
+        env.storage().persistent().set(&DataKey::Counter, &id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Counter,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
