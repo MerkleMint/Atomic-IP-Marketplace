@@ -90,12 +90,18 @@ function decodeSwapScVal(
     decryptionKey = Buffer.from(native.decryption_key).toString("hex");
   }
 
+  const usdcAmount = Number(native.usdc_amount ?? 0);
+  if (usdcAmount <= 0) {
+    console.warn(`[decodeSwapScVal] swap ${swapId} has non-positive usdc_amount: ${usdcAmount}`);
+  }
+
   return {
     id: swapId,
     listing_id: Number(native.listing_id ?? 0),
     buyer: String(native.buyer ?? ""),
     seller: String(native.seller ?? ""),
-    usdc_amount: Number(native.usdc_amount ?? 0),
+    usdc_amount: usdcAmount,
+    usdc_token: String(native.usdc_token ?? ""),
     created_at: Number(native.created_at ?? 0),
     expires_at: Number(native.expires_at ?? 0),
     status,
