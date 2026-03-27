@@ -263,8 +263,7 @@ impl IpRegistry {
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
         assert_not_paused(&env);
-        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
-        {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() || royalty_bps > 10_000 {
             return Err(ContractError::InvalidInput);
         }
         if price_usdc <= 0 {
@@ -738,15 +737,12 @@ mod test {
             &owner,
             &-1i128,
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
     }
 
     #[test]
     fn test_register_rejects_zero_price() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
+        let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
             &owner,
@@ -1243,5 +1239,46 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
         let listing2 = client.get_listing(&id);
         assert!(listing2.is_some(), "get_listing should continue working after multiple TTL extensions");
+    }
+
+    // ── Issue #260 tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_ip_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &0i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &-1i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_valid_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
+        let listing = client.get_listing(&id).expect("listing should exist");
+        assert_eq!(listing.price_usdc, 1);
     }
 }
