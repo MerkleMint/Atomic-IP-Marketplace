@@ -5,7 +5,7 @@ import "./InitiateSwapModal.css";
 
 const USDC_CONTRACT_ID = import.meta.env.VITE_CONTRACT_USDC ?? "";
 const ZK_VERIFIER_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ZK_VERIFIER ?? "";
-const USDC_DECIMALS = 7; // Stellar USDC uses 7 decimal places
+const USDC_DECIMALS = 7; 
 
 export interface Listing {
   id: number;
@@ -35,21 +35,13 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
   const backdropRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
 
-  // Close on Escape
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Focus trap
   useEffect(() => { modalRef.current?.focus(); }, []);
-
-  const usdcAmountRaw = (): bigint => {
-    const parsed = parseFloat(amount);
-    if (isNaN(parsed) || parsed <= 0) return 0n;
-    return BigInt(Math.round(parsed * Math.pow(10, USDC_DECIMALS)));
-  };
 
   const minAmount = listing.price_usdc > 0
     ? listing.price_usdc / Math.pow(10, USDC_DECIMALS)
@@ -66,20 +58,21 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
       return;
     }
 
-    const raw = usdcAmountRaw();
+    const numAmount = parseFloat(amount);
 
     try {
-      // Step 1: Approve USDC
       setStep("approving");
-      await approveUsdc(USDC_CONTRACT_ID, import.meta.env.VITE_CONTRACT_ATOMIC_SWAP, raw, wallet);
+      await approveUsdc(
+        USDC_CONTRACT_ID, 
+        import.meta.env.VITE_CONTRACT_ATOMIC_SWAP, 
+        numAmount, 
+        wallet
+      );
 
-      // Step 2: Initiate swap
       setStep("initiating");
       const id = await initiateSwap(
         listing.id,
-        listing.owner,
-        USDC_CONTRACT_ID,
-        raw,
+        numAmount,
         ZK_VERIFIER_CONTRACT_ID,
         wallet
       );
@@ -88,6 +81,7 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
       setStep("success");
       onSuccess(id);
     } catch (err) {
+      console.error("Swap Error:", err);
       setError(err instanceof Error ? err.message : "Transaction failed.");
       setStep("input");
     }
@@ -115,7 +109,6 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
           <button className="ism__close" onClick={onClose} aria-label="Close" disabled={busy}>×</button>
         </div>
 
-        {/* Listing details */}
         <div className="ism__listing">
           <div className="ism__listing-row">
             <span className="ism__listing-label">Listing</span>
@@ -170,12 +163,13 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
             {error && <p className="ism__error" role="alert">{error}</p>}
 
             <div className="ism__steps">
-              <div className={`ism__step ${step === "approving" ? "ism__step--active" : ""} ${(step === "initiating" || step === "success") ? "ism__step--done" : ""}`}>
+              {/* Step 1: Logic fix here to avoid TS comparison error */}
+              <div className={`ism__step ${step === "approving" ? "ism__step--active" : ""} ${step === "initiating" ? "ism__step--done" : ""}`}>
                 <span className="ism__step-num">1</span>
                 <span>Approve USDC</span>
                 {step === "approving" && <span className="ism__spinner" aria-hidden="true" />}
               </div>
-              <div className={`ism__step ${step === "initiating" ? "ism__step--active" : ""} ${step === "success" ? "ism__step--done" : ""}`}>
+              <div className={`ism__step ${step === "initiating" ? "ism__step--active" : ""}`}>
                 <span className="ism__step-num">2</span>
                 <span>Initiate Swap</span>
                 {step === "initiating" && <span className="ism__spinner" aria-hidden="true" />}
