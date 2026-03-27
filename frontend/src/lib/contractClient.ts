@@ -189,14 +189,53 @@ export async function cancelSwap(
 }
 
 /**
- * Calls confirm_swap(swap_id, decryption_key) on the atomic_swap contract.
+ * Encode a ProofNode[] as a Soroban Vec<ProofNode> ScVal.
+ *
+ * Expected JSON format for each node:
+ *   { "sibling": "0x..." or hex string (32 bytes), "is_left": true|false }
+ */
+function encodeProofPath(proofPath: ProofNode[]): import("@stellar/stellar-sdk").xdr.ScVal {
+  return StellarSdk.xdr.ScVal.scvVec(
+    proofPath.map((node) => {
+      const siblingBytes = Buffer.from(node.sibling.replace(/^0x/, ""), "hex");
+      if (siblingBytes.length !== 32) {
+        throw new Error(`ProofNode sibling must be exactly 32 bytes (64 hex chars), got ${siblingBytes.length} bytes.`);
+      }
+      return StellarSdk.xdr.ScVal.scvMap([
+        new StellarSdk.xdr.ScMapEntry({
+          key: StellarSdk.xdr.ScVal.scvSymbol("is_left"),
+          val: StellarSdk.xdr.ScVal.scvBool(node.is_left),
+        }),
+        new StellarSdk.xdr.ScMapEntry({
+          key: StellarSdk.xdr.ScVal.scvSymbol("sibling"),
+          val: StellarSdk.xdr.ScVal.scvBytes(siblingBytes),
+        }),
+      ]);
+    }),
+  );
+}
+
+/**
+ * Calls confirm_swap(swap_id, decryption_key, proof_path) on the atomic_swap contract.
+ *
+ * proof_path format (JSON array):
+ *   [
+ *     { "sibling": "<64-char-hex>", "is_left": true },
+ *     { "sibling": "<64-char-hex>", "is_left": false },
+ *     ...
+ *   ]
+ *
+ * Each sibling must be exactly 32 bytes (64 hex characters).
+ *
  * @param {string|number} swapId
  * @param {string} decryptionKey - hex or base64 string of the decryption key
+ * @param {ProofNode[]} proofPath - Merkle proof path (Vec<ProofNode>)
  * @param {object} wallet        - { address, signTransaction }
  */
 export async function confirmSwap(
   swapId: number | string,
   decryptionKey: string,
+  proofPath: ProofNode[],
   wallet: {
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
@@ -208,6 +247,9 @@ export async function confirmSwap(
   if (!decryptionKey || !decryptionKey.trim()) {
     throw new Error("Decryption key is required.");
   }
+  if (!proofPath || proofPath.length === 0) {
+    throw new Error("Proof path is required and must be non-empty.");
+  }
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
@@ -216,6 +258,8 @@ export async function confirmSwap(
   const keyBytes = StellarSdk.xdr.ScVal.scvBytes(
     Buffer.from(decryptionKey.replace(/^0x/, ""), "hex"),
   );
+
+  const proofPathScVal = encodeProofPath(proofPath);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
@@ -226,6 +270,7 @@ export async function confirmSwap(
         "confirm_swap",
         StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
         keyBytes,
+        proofPathScVal,
       ),
     )
     .setTimeout(30)
@@ -674,22 +719,7 @@ export async function verifyPartialProof(
 ): Promise<boolean> {
   const leafBytes = Buffer.from(leafHex.replace(/^0x/, ""), "hex");
 
-  // Build Vec<ProofNode> as ScVal
-  const pathScVal = StellarSdk.xdr.ScVal.scvVec(
-    path.map((node) => {
-      const siblingBytes = Buffer.from(node.sibling.replace(/^0x/, ""), "hex");
-      return StellarSdk.xdr.ScVal.scvMap([
-        new StellarSdk.xdr.ScMapEntry({
-          key: StellarSdk.xdr.ScVal.scvSymbol("is_left"),
-          val: StellarSdk.xdr.ScVal.scvBool(node.is_left),
-        }),
-        new StellarSdk.xdr.ScMapEntry({
-          key: StellarSdk.xdr.ScVal.scvSymbol("sibling"),
-          val: StellarSdk.xdr.ScVal.scvBytes(siblingBytes),
-        }),
-      ]);
-    })
-  );
+  const pathScVal = encodeProofPath(path);
 
   const retval = await simulateZkView("verify_partial_proof", [
     StellarSdk.nativeToScVal(listingId, { type: "u64" }),
