@@ -685,14 +685,21 @@ impl AtomicSwap {
     }
 
     pub fn get_swap(env: Env, swap_id: u64) -> Option<Swap> {
-        env.storage().persistent().get(&DataKey::Swap(swap_id))
+        let key = DataKey::Swap(swap_id);
+        let swap: Option<Swap> = env.storage().persistent().get(&key);
+        if swap.is_some() {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        swap
     }
 
     pub fn get_decryption_key(env: Env, swap_id: u64) -> Option<Bytes> {
-        env.storage()
-            .persistent()
-            .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
-            .and_then(|swap| swap.decryption_key)
+        let key = DataKey::Swap(swap_id);
+        let swap: Option<Swap> = env.storage().persistent().get(&key);
+        if swap.is_some() {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        swap.and_then(|s| s.decryption_key)
     }
 
     /// Returns true if there is a pending swap for the given listing_id.
@@ -1866,6 +1873,62 @@ mod test {
         assert_eq!(swap.seller, seller);
         assert_eq!(swap.usdc_amount, 500);
         assert_eq!(swap.status, SwapStatus::Pending);
+    }
+
+    #[test]
+    fn test_get_swap_extends_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let zk_id = env.register(ZkVerifier, ());
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        // Advance ledger to near TTL expiry
+        env.ledger().with_mut(|li| li.sequence_number += 6_311_999);
+        // Reading the swap should extend TTL, keeping it accessible
+        assert!(client.get_swap(&swap_id).is_some());
+    }
+
+    #[test]
+    fn test_get_decryption_key_extends_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        // Advance ledger to near TTL expiry
+        env.ledger().with_mut(|li| li.sequence_number += 6_311_999);
+        // Reading the decryption key should extend TTL, keeping it accessible
+        assert!(client.get_decryption_key(&swap_id).is_some());
     }
 
     #[test]
