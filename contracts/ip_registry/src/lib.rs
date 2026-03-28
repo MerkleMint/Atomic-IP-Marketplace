@@ -867,6 +867,34 @@ mod test {
     }
 
     #[test]
+    fn test_get_listing_extends_ttl_near_expiry() {
+        // Advance to just below the TTL threshold so the entry is close to
+        // expiring, then call get_listing — which must extend the TTL.
+        // Afterwards, advance by another THRESHOLD worth of ledgers and
+        // confirm the listing is still accessible (it would be gone without
+        // the extension).
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmNearExpiry", b"root", 1);
+
+        // Advance to just inside the threshold window (TTL is about to drop
+        // below THRESHOLD, triggering extend_ttl on the next read).
+        let near_expiry = EXTEND_TO - THRESHOLD + 1;
+        env.ledger().with_mut(|li| li.sequence_number += near_expiry);
+
+        // This read should extend the TTL to EXTEND_TO from the current ledger.
+        assert!(client.get_listing(&id).is_some(), "listing should exist near expiry");
+
+        // Advance another THRESHOLD ledgers — without the extension the entry
+        // would have expired, but with it the listing must still be present.
+        env.ledger().with_mut(|li| li.sequence_number += THRESHOLD);
+        assert!(
+            client.get_listing(&id).is_some(),
+            "listing should persist after TTL was extended by get_listing"
+        );
+    }
+
+    #[test]
     fn test_counter_persists_across_ttl_boundary() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
