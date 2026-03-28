@@ -137,6 +137,18 @@ pub struct OwnershipTransferred {
     pub to: Address,
 }
 
+#[contractevent]
+pub struct IpUpdated {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+    pub price_usdc: i128,
+    pub royalty_bps: u32,
+}
+
 /// Emitted when the contract is paused by the admin.
 #[contractevent]
 pub struct ContractPausedEvent {
@@ -466,18 +478,23 @@ impl IpRegistry {
         all_listings.slice(offset..end)
     }
 
-    /// Update ipfs_hash and/or merkle_root of an existing listing.
-    /// Requires owner auth. Rejects if a pending swap exists for the listing.
+    /// Update ipfs_hash, merkle_root, price_usdc, and/or royalty_bps of an existing listing.
+    /// Requires owner auth.
     pub fn update_listing(
         env: Env,
         owner: Address,
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
+        new_price_usdc: i128,
+        new_royalty_bps: u32,
     ) {
         assert_not_paused(&env);
-        if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
+        if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() || new_royalty_bps > 10_000 {
             panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if new_price_usdc <= 0 {
+            panic_with_error!(&env, ContractError::InvalidPrice);
         }
         owner.require_auth();
 
@@ -493,13 +510,25 @@ impl IpRegistry {
         }
 
         let cfg = get_config(&env);
-        listing.ipfs_hash = new_ipfs_hash;
-        listing.merkle_root = new_merkle_root;
+        listing.ipfs_hash = new_ipfs_hash.clone();
+        listing.merkle_root = new_merkle_root.clone();
+        listing.price_usdc = new_price_usdc;
+        listing.royalty_bps = new_royalty_bps;
         env.storage().persistent().set(&key, &listing);
         extend_persistent(&env, &key, &cfg);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
+
+        IpUpdated {
+            listing_id,
+            owner,
+            ipfs_hash: new_ipfs_hash,
+            merkle_root: new_merkle_root,
+            price_usdc: new_price_usdc,
+            royalty_bps: new_royalty_bps,
+        }
+        .publish(&env);
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -1175,6 +1204,8 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"QmHashNew"),
             &Bytes::from_slice(&env, b"rootNew"),
+            &2000i128,
+            &100u32,
         );
     }
 
@@ -1190,6 +1221,8 @@ mod test {
             &id,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &100u32,
         );
     }
 
@@ -1205,7 +1238,82 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::new(&env),
+            &2000i128,
+            &100u32,
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_update_listing_rejects_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &0i128,
+            &100u32,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_update_listing_rejects_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &-100i128,
+            &100u32,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_update_listing_rejects_royalty_bps_above_10000() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &10_001u32,
+        );
+    }
+
+    #[test]
+    fn test_update_listing_success() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &500u32,
+        );
+        
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.ipfs_hash, Bytes::from_slice(&env, b"newHash"));
+        assert_eq!(listing.merkle_root, Bytes::from_slice(&env, b"newRoot"));
+        assert_eq!(listing.price_usdc, 2000);
+        assert_eq!(listing.royalty_bps, 500);
     }
 
     #[test]
