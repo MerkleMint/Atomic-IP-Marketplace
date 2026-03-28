@@ -53,6 +53,14 @@ pub struct ProofVerified {
     pub result: bool,
 }
 
+#[contractevent]
+pub struct RootOwnershipTransferred {
+    #[topic]
+    pub listing_id: u64,
+    pub from: Address,
+    pub to: Address,
+}
+
 /// Client interface for ZkVerifier — always compiled so dependents can use ZkVerifierClient.
 #[cfg(not(feature = "contract"))]
 #[contractclient(name = "ZkVerifierClient")]
@@ -219,6 +227,12 @@ impl ZkVerifier {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+        RootOwnershipTransferred {
+            listing_id,
+            from: current_owner,
+            to: new_owner,
+        }
+        .publish(&env);
     }
 }
 
@@ -470,6 +484,41 @@ mod test {
         let new_root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"new")).into();
         client.set_merkle_root(&new_owner, &1u64, &new_root);
         assert_eq!(client.get_merkle_root(&1u64), Some(new_root));
+    }
+
+    #[test]
+    fn test_transfer_root_ownership_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"leaf"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        client.transfer_root_ownership(&owner, &1u64, &new_owner);
+
+        let events = env.events().all().events();
+        let transfer_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                if let soroban_sdk::xdr::ContractEvent {
+                    type_: soroban_sdk::xdr::ContractEventType::Contract,
+                    body: soroban_sdk::xdr::ContractEventBody::V0(v0),
+                } = e
+                {
+                    v0.topics.len() > 0
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert!(!transfer_events.is_empty(), "RootOwnershipTransferred event not emitted");
     }
 
     #[test]
