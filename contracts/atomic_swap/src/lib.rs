@@ -304,7 +304,8 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
-        Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
+        // Validate fee calculation; panics if fee would truncate to zero
+        let _fee = Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
 
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(config.cancel_delay_secs);
