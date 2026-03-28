@@ -677,6 +677,9 @@ impl AtomicSwap {
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveListingSwap(swap.listing_id));
+        env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
@@ -2196,6 +2199,89 @@ mod test {
             .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
         client.cancel_swap(&swap_id);
         assert!(client.is_listing_available(&listing_id));
+    }
+
+    // ── cancel-swap-clear-active-listing regression tests ────────────────────
+
+    #[test]
+    fn test_cancel_then_reinitiate_same_listing_succeeds() {
+        // Property 1: Cancel then re-initiate succeeds
+        // After cancelling a swap, a new initiate_swap on the same listing_id
+        // must succeed and return a fresh swap ID.
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 1000, 1);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        // Advance time past cancel delay and cancel the swap
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Cancelled)
+        );
+
+        // Mint more USDC for the buyer so they can initiate again
+        token::Client::new(&env, &usdc_id).mint(&buyer, &500);
+
+        // A new initiate_swap on the same listing must succeed
+        let new_swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+        );
+        assert!(new_swap_id > swap_id, "new swap ID should be greater than the cancelled one");
+        assert_eq!(
+            client.get_swap_status(&new_swap_id),
+            Some(SwapStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn test_cancel_clears_active_listing_entry() {
+        // Property 2: Cancelled swap has no active listing entry
+        // After cancelling, has_pending_swap must return false.
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        assert!(client.has_pending_swap(&listing_id));
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+
+        assert!(!client.has_pending_swap(&listing_id));
     }
 
     #[test]
