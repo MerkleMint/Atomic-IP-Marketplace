@@ -1,0 +1,24 @@
+Implements #338 - Frontend RegisterListingForm component for sellers to register new IP
+
+## Changes Made
+
+### New Components
+- RegisterListingForm.tsx: Form component with fields for ipfs_hash, merkle_root, price_usdc, royalty_bps, and royalty_recipient
+- RegisterListingForm.css: Styling with responsive design and dark mode support
+
+### Modified Files
+- contractClient.ts: Added registerIp() function that builds and submits the register_ip transaction
+- MyListingsDashboard.jsx: Integrated the form behind a Register New IP button
+- MyListingsDashboard.css: Added styles for the button and modal overlay
+
+## Validation
+- Client-side validation for non-empty hashes
+- Price must be > 0
+- Royalty BPS must be <= 10000
+- Royalty recipient validated as Stellar address format
+
+## Tasks Completed
+- [x] Create RegisterListingForm.tsx with fields for ipfs_hash, merkle_root, price_usdc, royalty_bps, and royalty_recipient
+- [x] Add a registerIp function to contractClient.ts that builds and submits the register_ip transaction
+- [x] Add client-side validation (non-empty hashes, price > 0, royalty_bps <= 10000)
+- [x] Integrate the form into MyListingsDashboard behind a Register New IP button

@@ -95,7 +95,28 @@ export function useMyListings(sellerAddress) {
     fetchListings();
 
     timerRef.current = setInterval(fetchListings, POLL_INTERVAL_MS);
-    return () => clearInterval(timerRef.current);
+
+    // Optimization: pause polling when the tab is hidden to avoid unnecessary RPC calls
+    // and reduce battery consumption on mobile devices
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+      } else {
+        // Tab became visible again, fetch immediately and restart polling
+        fetchListings();
+        timerRef.current = setInterval(fetchListings, POLL_INTERVAL_MS);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [fetchListings]);
 
   return { listings, loading, error, refresh: fetchListings };

@@ -1,24 +1,49 @@
+# Rust build artifacts
 /target
-.env
-build_error.txt
-build_output.txt
-*.wasm
-*.log
-*.tmp
-*.swp
-.DS_Store
-.vscode/settings.json
-.idea/
 *.rs.bk
 debug/
 release/
+
+# Compiled contracts
+*.wasm
 out/
-dist/
+
+# Build outputs
 build/
-node_modules/
+dist/
+build_error.txt
+build_output.txt
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.env.local
-.env.*.local
+
+# Temp / editor files
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
+
+# Node
+node_modules/
+
+# Test snapshots & coverage
 contracts/*/test_snapshots/
+coverage/
+*.snap
+lcov.info
+*.profraw
+*.profdata
+
+# Vite / TypeScript cache
+*.tsbuildinfo
+.vite/

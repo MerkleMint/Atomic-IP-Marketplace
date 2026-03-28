@@ -4,7 +4,6 @@ import type { Wallet } from "../lib/walletKit";
 import "./InitiateSwapModal.css";
 
 const USDC_CONTRACT_ID = import.meta.env.VITE_CONTRACT_USDC ?? "";
-const ZK_VERIFIER_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ZK_VERIFIER ?? "";
 const USDC_DECIMALS = 7; // Stellar USDC uses 7 decimal places
 
 export interface Listing {
@@ -80,7 +79,6 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
         listing.owner,
         USDC_CONTRACT_ID,
         raw,
-        ZK_VERIFIER_CONTRACT_ID,
         wallet
       );
 

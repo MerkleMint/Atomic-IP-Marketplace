@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useWallet } from "../context/WalletContext";
 import { useMyListings } from "../hooks/useMyListings";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
@@ -98,6 +98,12 @@ export function MyListingsDashboard() {
   const { listings, loading, error, refresh } = useMyListings(
     wallet?.address ?? null
   );
+  const [showRegisterForm, setShowRegisterForm] = useState(false);
+
+  const handleRegisterSuccess = () => {
+    setShowRegisterForm(false);
+    refresh();
+  };
 
   // ── Not connected ──────────────────────────────────────────────────────────
   if (!wallet) {
@@ -119,21 +125,44 @@ export function MyListingsDashboard() {
     <section className="mld" aria-label="My Listings Dashboard">
       <div className="mld__header">
         <h2 className="mld__title">My Listings</h2>
-        <button
-          className="mld__refresh-btn"
-          onClick={refresh}
-          disabled={loading}
-          aria-label="Refresh listings"
-          aria-busy={loading}
-        >
-          {loading ? (
-            <span className="mld__spinner" aria-hidden="true" />
-          ) : (
-            <span aria-hidden="true">↻</span>
-          )}
-          {loading ? "Loading…" : "Refresh"}
-        </button>
+        <div className="mld__header-actions">
+          <button
+            className="mld__register-btn"
+            onClick={() => setShowRegisterForm(true)}
+            aria-label="Register new IP listing"
+          >
+            <span aria-hidden="true">+</span>
+            Register New IP
+          </button>
+          <button
+            className="mld__refresh-btn"
+            onClick={refresh}
+            disabled={loading}
+            aria-label="Refresh listings"
+            aria-busy={loading}
+          >
+            {loading ? (
+              <span className="mld__spinner" aria-hidden="true" />
+            ) : (
+              <span aria-hidden="true">↻</span>
+            )}
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </div>
+
+      {/* Register IP Form Modal */}
+      {showRegisterForm && (
+        <div className="mld__modal-overlay" onClick={() => setShowRegisterForm(false)}>
+          <div className="mld__modal-content" onClick={(e) => e.stopPropagation()}>
+            <RegisterListingForm
+              wallet={wallet}
+              onSuccess={handleRegisterSuccess}
+              onCancel={() => setShowRegisterForm(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {error && (
         <p className="mld__error" role="alert">

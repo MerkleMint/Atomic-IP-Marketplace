@@ -54,7 +54,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-wasm-
 
       - name: Build WASM (all contracts)
-        run: cargo build --target wasm32-unknown-unknown --release --workspace
+        run: |
+          cargo build --target wasm32-unknown-unknown --release -p ip_registry
+          cargo build --target wasm32-unknown-unknown --release -p zk_verifier
+          cargo build --target wasm32-unknown-unknown --release -p atomic_swap
 
       - name: Verify WASM artifacts exist
         run: |

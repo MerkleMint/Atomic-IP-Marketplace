@@ -47,6 +47,9 @@ export function WalletConnectButton() {
     );
   }
 
+  // Show reconnection error when connecting is true and error is set (from auto-reconnect)
+  const isReconnectFailed = connecting === false && error !== null && !wallet;
+
   return (
     <>
       <button
@@ -55,8 +58,12 @@ export function WalletConnectButton() {
         disabled={connecting}
         aria-busy={connecting}
       >
-        {connecting ? "Connecting…" : "Connect Wallet"}
+        {connecting ? "Connecting…" : isReconnectFailed ? "Reconnection failed" : "Connect Wallet"}
       </button>
+
+      {isReconnectFailed && (
+        <p className="wck-btn--error" role="alert">{error}</p>
+      )}
 
       {modalOpen && (
         <div
