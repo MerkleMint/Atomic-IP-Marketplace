@@ -1157,8 +1157,6 @@ mod test {
 
     #[test]
     #[should_panic(expected = "Error(Contract, #9)")]
-    #[test]
-    #[should_panic(expected = "Error(Contract, #9)")]
     fn test_update_listing_blocked_when_paused() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
