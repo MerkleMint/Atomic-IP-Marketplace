@@ -43,6 +43,8 @@ pub enum ContractError {
     DisputeWindowActive = 19,
     /// The provided token is not in the allowed list.
     InvalidToken = 20,
+    /// Fee basis points exceeds 10,000 (100%).
+    FeeBpsTooHigh = 21,
 }
 
 #[contracttype]
@@ -190,6 +192,9 @@ impl AtomicSwap {
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             env.panic_with_error(ContractError::AlreadyInitialized);
+        }
+        if fee_bps > 10_000 {
+            env.panic_with_error(ContractError::FeeBpsTooHigh);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
@@ -2303,6 +2308,31 @@ mod test {
             &500,
             &zk_verifier,
             &registry_id,
+        );
+    }
+
+    // ── Issue #448 test ────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #21)")]
+    fn test_initialize_rejects_fee_bps_too_high() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let ip_registry = Address::generate(&env);
+
+        client.initialize(
+            &admin,
+            &10_001u32,
+            &fee_recipient,
+            &3600u64,
+            &zk_verifier,
+            &ip_registry,
         );
     }
 }
