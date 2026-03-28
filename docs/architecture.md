@@ -26,7 +26,7 @@ sequenceDiagram
     ZKVerifier-->>Buyer: true / false
 
     %% 4. Buyer initiates swap (locks USDC)
-    Buyer->>AtomicSwap: initiate_swap(listing_id, buyer, seller, usdc_token, amount, zk_verifier, ip_registry)
+    Buyer->>AtomicSwap: initiate_swap(listing_id, buyer, seller, usdc_token, amount)
     AtomicSwap->>IPRegistry: get_listing(listing_id)
     IPRegistry-->>AtomicSwap: Listing { owner, ... }
     Note over AtomicSwap: asserts listing.owner == seller
