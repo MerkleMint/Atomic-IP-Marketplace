@@ -8,6 +8,9 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     Unauthorized = 1,
+    RootNotFound = 2,
+    ProofTooLong = 3,
+    InvalidInput = 4,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -51,6 +54,14 @@ pub struct ProofVerified {
     #[topic]
     pub listing_id: u64,
     pub result: bool,
+}
+
+#[contractevent]
+pub struct RootOwnershipTransferred {
+    #[topic]
+    pub listing_id: u64,
+    pub from: Address,
+    pub to: Address,
 }
 
 /// Client interface for ZkVerifier — always compiled so dependents can use ZkVerifierClient.
@@ -115,9 +126,14 @@ impl ZkVerifier {
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MerkleRoot(listing_id))
+        let key = DataKey::MerkleRoot(listing_id);
+        let result = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        result
     }
 
     /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
@@ -156,13 +172,8 @@ impl ZkVerifier {
             None => return false,
         };
 
-        if path.len() > MAX_PROOF_DEPTH {
-            ProofVerified {
-                listing_id,
-                result: false,
-            }
-            .publish(&env);
-            return false;
+        if path.len() > MAX_PROOF_DEPTH as usize {
+            soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
         let zero_sibling = BytesN::from_array(&env, &[0u8; 32]);
@@ -204,7 +215,7 @@ impl ZkVerifier {
             .storage()
             .persistent()
             .get(&owner_key)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized));
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::RootNotFound));
         if stored != current_owner {
             soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized);
         }
@@ -214,6 +225,12 @@ impl ZkVerifier {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+        RootOwnershipTransferred {
+            listing_id,
+            from: current_owner,
+            to: new_owner,
+        }
+        .publish(&env);
     }
 }
 
@@ -292,6 +309,32 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
         assert_eq!(client.get_merkle_root(&42u64), Some(root));
+    }
+
+    #[test]
+    fn test_get_merkle_root_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"ttl_test_leaf");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        client.set_merkle_root(&owner, &99u64, &root);
+
+        // Advance ledger close to TTL expiry
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // Read the root — must extend TTL
+        assert_eq!(client.get_merkle_root(&99u64), Some(root.clone()));
+
+        // Advance again; root should still be alive (TTL was re-extended)
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        assert_eq!(client.get_merkle_root(&99u64), Some(root));
     }
 
     #[test]
@@ -415,7 +458,8 @@ mod test {
             });
         }
 
-        assert!(!client.verify_partial_proof(&8u64, &leaf, &path));
+        let result = client.try_verify_partial_proof(&8u64, &leaf, &path);
+        assert_eq!(result, Err(Ok(ContractError::ProofTooLong)));
     }
 
     #[test]
@@ -442,6 +486,41 @@ mod test {
     }
 
     #[test]
+    fn test_transfer_root_ownership_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"leaf"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        client.transfer_root_ownership(&owner, &1u64, &new_owner);
+
+        let events = env.events().all().events();
+        let transfer_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                if let soroban_sdk::xdr::ContractEvent {
+                    type_: soroban_sdk::xdr::ContractEventType::Contract,
+                    body: soroban_sdk::xdr::ContractEventBody::V0(v0),
+                } = e
+                {
+                    v0.topics.len() > 0
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert!(!transfer_events.is_empty(), "RootOwnershipTransferred event not emitted");
+    }
+
+    #[test]
     fn test_transfer_root_ownership_unauthorized() {
         let env = Env::default();
         env.mock_all_auths();
@@ -458,7 +537,21 @@ mod test {
         client.set_merkle_root(&owner, &1u64, &root);
 
         let result = client.try_transfer_root_ownership(&attacker, &1u64, &new_owner);
-        assert!(result.is_err());
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_transfer_root_ownership_root_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+
+        let result = client.try_transfer_root_ownership(&owner, &99u64, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::RootNotFound)));
     }
 
     // ── SHA-256 proof tests ───────────────────────────────────────────────────
