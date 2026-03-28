@@ -4,8 +4,16 @@ use soroban_sdk::{
     panic_with_error, Address, Bytes, Env, Vec,
 };
 
-/// Entry for batch IP registration: (ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc)
-pub type IpEntry = (Bytes, Bytes, u32, Address, i128);
+/// Entry for batch IP registration.
+#[contracttype]
+#[derive(Clone)]
+pub struct IpEntry {
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
+    pub price_usdc: i128,
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -135,6 +143,18 @@ pub struct OwnershipTransferred {
     pub from: Address,
     #[topic]
     pub to: Address,
+}
+
+#[contractevent]
+pub struct IpUpdated {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+    pub price_usdc: i128,
+    pub royalty_bps: u32,
 }
 
 /// Emitted when the contract is paused by the admin.
@@ -341,11 +361,11 @@ impl IpRegistry {
         assert_not_paused(&env);
         let mut i: u32 = 0;
         while i < entries.len() {
-            let (ipfs_hash, merkle_root, royalty_bps, _royalty_recipient, price_usdc) = entries.get(i).unwrap();
-            if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000 {
+            let entry = entries.get(i).unwrap();
+            if entry.ipfs_hash.is_empty() || entry.merkle_root.is_empty() || entry.price_usdc < 0 || entry.royalty_bps > 10_000 {
                 panic_with_error!(&env, ContractError::InvalidInput);
             }
-            if price_usdc <= 0 {
+            if entry.price_usdc <= 0 {
                 panic_with_error!(&env, ContractError::InvalidPrice);
             }
             i += 1;
@@ -358,9 +378,18 @@ impl IpRegistry {
         let mut ipfs_hashes: Vec<Bytes> = Vec::new(&env);
         let mut merkle_roots: Vec<Bytes> = Vec::new(&env);
 
+        // Optimization: Reduced OwnerIndex storage IO from O(N) to O(1) per batch.
+        // Load the owner's index once before the loop; push IDs in-memory; flush once after.
+        let idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut owner_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
         let mut j: u32 = 0;
         while j < entries.len() {
-            let (ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc) = entries.get(j).unwrap();
+            let entry = entries.get(j).unwrap();
 
             let prev: u64 = env
                 .storage()
@@ -378,38 +407,35 @@ impl IpRegistry {
                 &key,
                 &Listing {
                     owner: owner.clone(),
-                    ipfs_hash: ipfs_hash.clone(),
-                    merkle_root: merkle_root.clone(),
-                    royalty_bps,
-                    royalty_recipient,
-                    price_usdc,
+                    ipfs_hash: entry.ipfs_hash.clone(),
+                    merkle_root: entry.merkle_root.clone(),
+                    royalty_bps: entry.royalty_bps,
+                    royalty_recipient: entry.royalty_recipient.clone(),
+                    price_usdc: entry.price_usdc,
                 },
             );
             extend_persistent(&env, &key, &cfg);
 
-            let idx_key = DataKey::OwnerIndex(owner.clone());
-            let mut ids: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&idx_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            ids.push_back(id);
-            env.storage().persistent().set(&idx_key, &ids);
-            extend_persistent(&env, &idx_key, &cfg);
+            // Accumulate into the in-memory Vec; no storage IO for OwnerIndex here.
+            owner_ids.push_back(id);
 
             listing_ids.push_back(id);
-            ipfs_hashes.push_back(ipfs_hash.clone());
-            merkle_roots.push_back(merkle_root.clone());
+            ipfs_hashes.push_back(entry.ipfs_hash.clone());
+            merkle_roots.push_back(entry.merkle_root.clone());
 
             ListingRegistered {
                 listing_id: id,
                 owner: owner.clone(),
-                ipfs_hash,
+                ipfs_hash: entry.ipfs_hash,
             }
             .publish(&env);
 
             j += 1;
         }
+
+        // Single write for OwnerIndex regardless of batch size.
+        env.storage().persistent().set(&idx_key, &owner_ids);
+        extend_persistent(&env, &idx_key, &cfg);
 
         env.storage()
             .persistent()
@@ -466,18 +492,22 @@ impl IpRegistry {
         all_listings.slice(offset..end)
     }
 
-    /// Update ipfs_hash and/or merkle_root of an existing listing.
-    /// Requires owner auth. Rejects if a pending swap exists for the listing.
+    /// Update ipfs_hash, merkle_root, price_usdc, and/or royalty_bps of an existing listing.
+    /// Requires owner auth.
     pub fn update_listing(
         env: Env,
         owner: Address,
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
-    ) {
+        atomic_swap: Address,
+    ) -> Result<(), ContractError> {
         assert_not_paused(&env);
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
-            panic_with_error!(&env, ContractError::InvalidInput);
+            return Err(ContractError::InvalidInput);
+        }
+        if new_price_usdc <= 0 {
+            panic_with_error!(&env, ContractError::InvalidPrice);
         }
         owner.require_auth();
 
@@ -486,20 +516,29 @@ impl IpRegistry {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+            .ok_or(ContractError::ListingNotFound)?;
 
         if listing.owner != owner {
-            panic_with_error!(&env, ContractError::Unauthorized);
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Check for pending swap before updating
+        if AtomicSwapClient::new(&env, &atomic_swap).has_pending_swap(&listing_id) {
+            return Err(ContractError::PendingSwapExists);
         }
 
         let cfg = get_config(&env);
-        listing.ipfs_hash = new_ipfs_hash;
-        listing.merkle_root = new_merkle_root;
+        listing.ipfs_hash = new_ipfs_hash.clone();
+        listing.merkle_root = new_merkle_root.clone();
+        listing.price_usdc = new_price_usdc;
+        listing.royalty_bps = new_royalty_bps;
         env.storage().persistent().set(&key, &listing);
         extend_persistent(&env, &key, &cfg);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
+        
+        Ok(())
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -507,6 +546,7 @@ impl IpRegistry {
         env: Env,
         owner: Address,
         listing_id: u64,
+        atomic_swap: Option<Address>,
     ) -> Result<(), ContractError> {
         owner.require_auth();
 
@@ -521,6 +561,12 @@ impl IpRegistry {
             return Err(ContractError::Unauthorized);
         }
 
+        if let Some(swap_addr) = atomic_swap {
+            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
+                return Err(ContractError::PendingSwapExists);
+            }
+        }
+
         env.storage().persistent().remove(&key);
 
         let idx_key = DataKey::OwnerIndex(owner.clone());
@@ -532,7 +578,13 @@ impl IpRegistry {
         if let Some(pos) = (0..ids.len()).find(|&i| ids.get(i).unwrap() == listing_id) {
             ids.remove(pos);
         }
-        env.storage().persistent().set(&idx_key, &ids);
+        
+        // Remove the OwnerIndex key if empty to avoid wasting storage
+        if ids.is_empty() {
+            env.storage().persistent().remove(&idx_key);
+        } else {
+            env.storage().persistent().set(&idx_key, &ids);
+        }
 
         IpDeregistered { listing_id, owner }.publish(&env);
 
@@ -546,6 +598,7 @@ impl IpRegistry {
         owner: Address,
         listing_id: u64,
         new_owner: Address,
+        atomic_swap: Address,
     ) -> Result<(), ContractError> {
         owner.require_auth();
 
@@ -558,6 +611,11 @@ impl IpRegistry {
 
         if listing.owner != owner {
             return Err(ContractError::Unauthorized);
+        }
+
+        // Check for pending swap before transferring
+        if AtomicSwapClient::new(&env, &atomic_swap).has_pending_swap(&listing_id) {
+            return Err(ContractError::PendingSwapExists);
         }
 
         let cfg = get_config(&env);
@@ -847,20 +905,8 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            500,
-            owner.clone(),
-            1000,
-        ));
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash2"),
-            Bytes::from_slice(&env, b"root2"),
-            500,
-            owner.clone(),
-            1000,
-        ));
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash1"), merkle_root: Bytes::from_slice(&env, b"root1"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash2"), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
         let ids = client.batch_register_ip(&owner, &entries);
         assert_eq!(ids.len(), 2);
         assert_eq!(ids.get(0).unwrap(), 1);
@@ -883,7 +929,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root"), 500, owner.clone(), 1000));
+        entries.push_back(IpEntry { ipfs_hash: Bytes::new(&env), merkle_root: Bytes::from_slice(&env, b"root"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
     }
 
@@ -892,16 +938,77 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash1"), merkle_root: Bytes::from_slice(&env, b"root1"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
+        entries.push_back(IpEntry { ipfs_hash: Bytes::new(&env), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash1"),
             Bytes::from_slice(&env, b"root1"),
             500,
             owner.clone(),
-            1000,
+            0,
         ));
-        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2"), 500, owner.clone(), 1000));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            -100,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_royalty_bps_above_10000() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_001,
+            owner.clone(),
+            1000,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_accepts_valid_price_and_royalty() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_000,
+            owner.clone(),
+            1,
+        ));
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 1);
+        let listing = client.get_listing(&ids.get(0).unwrap()).unwrap();
+        assert_eq!(listing.price_usdc, 1);
+        assert_eq!(listing.royalty_bps, 10_000);
     }
 
     #[test]
@@ -909,7 +1016,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        client.deregister_listing(&owner, &id);
+        client.deregister_listing(&owner, &id, &None);
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
@@ -920,9 +1027,26 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        let result = client.try_deregister_listing(&attacker, &id);
+        let result = client.try_deregister_listing(&attacker, &id, &None);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
+    }
+
+    #[test]
+    fn test_deregister_listing_removes_empty_owner_index() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
+        
+        // Verify owner index exists
+        assert_eq!(client.list_by_owner(&owner).len(), 1);
+        
+        // Deregister the only listing
+        client.deregister_listing(&owner, &id);
+        
+        // Verify listing is gone and owner index is empty
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
 
     #[test]
@@ -939,23 +1063,38 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            500,
-            owner.clone(),
-            1000,
-        ));
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash2"),
-            Bytes::from_slice(&env, b"root2"),
-            500,
-            owner.clone(),
-            1000,
-        ));
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash1"), merkle_root: Bytes::from_slice(&env, b"root1"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash2"), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
         client.batch_register_ip(&owner, &entries);
         // Events are emitted; verify no panic and count is correct.
         assert_eq!(client.listing_count(), 2);
+    }
+
+    /// Verifies that OwnerIndex is written exactly once per batch call (O(1) index IO).
+    /// Registers 5 IPs and confirms the index contains exactly those IDs in insertion order.
+    #[test]
+    fn test_batch_register_ip_owner_index_integrity() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        for n in 1u8..=5 {
+            entries.push_back((
+                Bytes::from_slice(&env, &[b'Q', b'm', n]),
+                Bytes::from_slice(&env, &[b'r', n]),
+                500,
+                owner.clone(),
+                1000,
+            ));
+        }
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 5);
+
+        let index = client.list_by_owner(&owner);
+        assert_eq!(index.len(), 5);
+        // IDs must appear in insertion order.
+        for i in 0..5u32 {
+            assert_eq!(index.get(i).unwrap(), ids.get(i).unwrap());
+        }
     }
 
     #[test]
@@ -1001,9 +1140,10 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 500);
 
-        client.transfer_listing_ownership(&owner, &id, &new_owner);
+        client.transfer_listing_ownership(&owner, &id, &new_owner, &atomic_swap);
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, new_owner);
@@ -1018,9 +1158,10 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let new_owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
 
-        let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner);
+        let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner, &atomic_swap);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 
         // Ownership unchanged
@@ -1033,9 +1174,29 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
 
-        let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner);
+        let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner, &atomic_swap);
         assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
+    }
+
+    #[test]
+    fn test_transfer_listing_ownership_rejects_pending_swap() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
+
+        // Mock has_pending_swap to return true
+        env.mock_all_auths();
+        
+        let result = client.try_transfer_listing_ownership(&owner, &id, &new_owner, &atomic_swap);
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+
+        // Ownership unchanged
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.owner, owner);
     }
 
     // ── Pause/Unpause tests ────────────────────────────────────────────────
@@ -1085,13 +1246,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            500,
-            owner.clone(),
-            1000,
-        ));
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash1"), merkle_root: Bytes::from_slice(&env, b"root1"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
         client.pause();
         client.batch_register_ip(&owner, &entries);
     }
@@ -1101,6 +1256,7 @@ mod test {
     fn test_update_listing_blocked_when_paused() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
         client.update_listing(
@@ -1108,37 +1264,61 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"QmHashNew"),
             &Bytes::from_slice(&env, b"rootNew"),
+            &atomic_swap,
         );
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_update_listing_rejects_empty_ipfs_hash() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         
-        client.update_listing(
+        let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"newRoot"),
+            &atomic_swap,
         );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_update_listing_rejects_empty_merkle_root() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         
-        client.update_listing(
+        let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::new(&env),
+            &atomic_swap,
         );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
+    #[test]
+    fn test_update_listing_rejects_pending_swap() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        env.mock_all_auths();
+        
+        let result = client.try_update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &atomic_swap,
+        );
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
     }
 
     #[test]
@@ -1159,7 +1339,7 @@ mod test {
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
         // Deregister should succeed even when paused (read-only operation)
-        client.deregister_listing(&owner, &id);
+        client.deregister_listing(&owner, &id, &None);
         assert!(client.get_listing(&id).is_none());
     }
 
