@@ -9,6 +9,7 @@ export interface Swap {
   buyer: string;
   seller: string;
   usdc_amount: number;
+  usdc_token: string;
   created_at: number;
   expires_at: number;
   status: string;

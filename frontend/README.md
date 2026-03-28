@@ -71,3 +71,23 @@ export default defineConfig([
   },
 ])
 ```
+
+## Configuration
+
+This project uses environment variables for contract addresses and network settings. 
+
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Fill in the required contract addresses in `.env`. The application will throw an error at runtime if required contract addresses (`VITE_CONTRACT_IP_REGISTRY`, `VITE_CONTRACT_ATOMIC_SWAP`, `VITE_CONTRACT_ZK_VERIFIER`) are missing.
+
+Variable | Description
+--- | ---
+`VITE_STELLAR_NETWORK` | `testnet` or `mainnet`
+`VITE_STELLAR_RPC_URL` | The Soroban RPC endpoint
+`VITE_CONTRACT_IP_REGISTRY` | ID of the IP Registry contract
+`VITE_CONTRACT_ATOMIC_SWAP` | ID of the Atomic Swap contract
+`VITE_CONTRACT_ZK_VERIFIER` | ID of the ZK Verifier contract
+`VITE_CONTRACT_USDC` | (Optional) ID of the USDC token contract
+`VITE_IPFS_GATEWAY` | (Optional) IPFS gateway for metadata previews

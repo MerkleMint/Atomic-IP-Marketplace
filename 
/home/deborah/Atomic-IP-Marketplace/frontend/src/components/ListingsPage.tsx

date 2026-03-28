@@ -1,7 +1,9 @@
+
 import { useEffect, useState, useMemo } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { ShoppingCart, Loader2, Search, Filter } from "lucide-react";
 import { useDebounce } from "../lib/debounce";
+import { getAllListings, type Listing as ContractListing } from "../lib/contractClient";
 
 interface Listing {
   id: number;
@@ -10,45 +12,6 @@ interface Listing {
   price: number;
   status: 'available' | 'pending' | 'sold';
 }
-
-const mockListings: Listing[] = [
-  {
-    id: 1,
-    ipfs_hash: "QmXyZ12345abcdefghijkLMNOPQRSTUVWXYZabcdef",
-    owner: "GABCDEFGHJKLMNPQRSTUVXYZ23456789ABCDEFGHJK",
-    price: 120,
-    status: 'available',
-  },
-  {
-    id: 2,
-    ipfs_hash: "QmZyX54321mnopqrstuVWXYZabcdef1234567890",
-    owner: "GABCDE1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    price: 225,
-    status: 'pending',
-  },
-  {
-    id: 3,
-    ipfs_hash: "QmLmnopQRStuvwxyZABCDEF1234567890ghijklmnop",
-    owner: "G1234567890ABCDEFGHJKLMNPQRSTUVWXYZabcdef",
-    price: 89,
-    status: 'sold',
-  },
-  {
-    id: 4,
-    ipfs_hash: "QmNew45678newipfshashforlistingfour",
-    owner: "GNEWOWNER1234567890ABCDEF",
-    price: 150,
-    status: 'available',
-  },
-  {
-    id: 5,
-    ipfs_hash: "QmFive99999fivehashhere",
-    owner: "GABCDE9999999999ABCDEF",
-    price: 300,
-    status: 'available',
-  },
-];
-
 
 function truncateHash(hash: string): string {
   if (!hash) return "";
@@ -63,11 +26,20 @@ function truncateAddress(address: string): string {
 }
 
 async function fetchListings(): Promise<Listing[]> {
-  // TODO: replace with real indexer API call once available
-  // e.g. const res = await fetch("/api/listings");
-  // return await res.json();
-  await new Promise((resolve) => setTimeout(resolve, 750));
-  return mockListings;
+  try {
+    const contractListings = await getAllListings(100);
+    return contractListings.map((cl): Listing => ({
+      id: cl.id,
+      ipfs_hash: cl.ipfs_hash,
+      owner: cl.owner,
+      price: Number(cl.price_usdc) / 1_000_000,
+      status: 'available' as const,
+    }));
+  } catch (error) {
+    console.error("Failed to fetch listings:", error);
+    // Graceful fallback - empty list
+    return [];
+  }
 }
 
 export function ListingsPage() {
@@ -117,8 +89,9 @@ export function ListingsPage() {
           setAllListings(data);
         }
       } catch (err) {
+        console.error("Load error:", err);
         if (mounted) {
-          setError("Unable to fetch listings at this time. Please try again.");
+          setError("Failed to fetch listings. Check console.");
         }
       } finally {
         if (mounted) {
@@ -134,13 +107,21 @@ export function ListingsPage() {
     };
   }, []);
 
-
   const content = () => {
-    if (filteredListings.length === 0) {
+    if (loading) {
+      return (
+        <div className="flex items-center justify-center p-12 text-slate-500">
+          <Loader2 className="h-8 w-8 animate-spin mr-3" />
+          Loading listings from IP registry...
+        </div>
+      );
+    }
+
+    if (error || filteredListings.length === 0) {
       return (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-700">
-          <p>No listings match your filters.</p>
-          <p className="text-sm text-slate-500">Try adjusting your search or status filter.</p>
+          <p>No listings found or fetch error.</p>
+          <p className="text-sm text-slate-500">Check RPC connection/console. Demo data shows UI works.</p>
         </div>
       );
     }
@@ -151,14 +132,14 @@ export function ListingsPage() {
           Showing {filteredListings.length} of {allListings.length} listings
         </p>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredListings.map((listing: Listing) => (
+          {filteredListings.map((listing) => (
             <article
               key={listing.id}
-              className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md"
+              className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow"
             >
               <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
                 <span>Listing #{listing.id}</span>
-                <span>{listing.price} USDC</span>
+                <span>{listing.price.toLocaleString()} USDC</span>
               </div>
 
               <div className="mb-3">
@@ -176,7 +157,7 @@ export function ListingsPage() {
               </div>
 
               <button
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-colors"
                 onClick={() => navigate(`/swap/${listing.id}`)}
               >
                 <ShoppingCart size={16} />
@@ -189,8 +170,6 @@ export function ListingsPage() {
     );
   };
 
-
-  // Filters UI
   const filters = (
     <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:gap-4">
       <div className="relative flex-1">
@@ -224,7 +203,7 @@ export function ListingsPage() {
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Marketplace Listings</h1>
-          <p className="text-sm text-slate-500">Browse all IP listings and select one to swap.</p>
+          <p className="text-sm text-slate-500">Browse all IP listings from Soroban contract.</p>
         </div>
         {loading && (
           <div className="inline-flex items-center gap-2 text-sm text-slate-500">
@@ -237,5 +216,5 @@ export function ListingsPage() {
       {content()}
     </section>
   );
-
 }
+

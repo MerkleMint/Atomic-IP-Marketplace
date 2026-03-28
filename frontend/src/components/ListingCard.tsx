@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import "./ListingCard.css";
@@ -6,14 +6,35 @@ import "./ListingCard.css";
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
 
+interface IListingCard {
+  listing: {
+    id: number;
+    ipfs_hash: string;
+    price_usdc: number;
+    pendingSwaps: any[];
+  };
+  wallet: {
+    walletId: string;
+    address: string;
+    signTransaction: (tx: any) => Promise<any>;
+  };
+  onUpdated: () => void;
+}
+
+interface IMeta {
+  title: string;
+  description: string;
+  file_type: string;
+}
+
 /**
  * useIpfsMetadata
  * Fetches JSON metadata from IPFS for a given hash.
  */
-function useIpfsMetadata(ipfsHash) {
-  const [meta, setMeta] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+function useIpfsMetadata(ipfsHash: string) {
+  const [meta, setMeta] = useState<IMeta | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!ipfsHash) return;
@@ -25,10 +46,18 @@ function useIpfsMetadata(ipfsHash) {
         if (!r.ok) throw new Error(`IPFS fetch failed (${r.status})`);
         return r.json();
       })
-      .then((data) => { if (!cancelled) setMeta(data); })
-      .catch((err) => { if (!cancelled) setError(err.message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .then((data) => {
+        if (!cancelled) setMeta(data as IMeta);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [ipfsHash]);
 
   return { meta, loading, error };
@@ -46,12 +75,16 @@ function useIpfsMetadata(ipfsHash) {
  *   wallet   - connected wallet { address, walletId, signTransaction }
  *   onUpdated - callback to refresh data after a swap action
  */
-export function ListingCard({ listing, wallet, onUpdated }) {
+export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
   const ipfsUrl = listing.ipfs_hash
     ? `${IPFS_GATEWAY}/${listing.ipfs_hash}`
     : null;
 
-  const { meta, loading: metaLoading, error: metaError } = useIpfsMetadata(listing.ipfs_hash);
+  const {
+    meta,
+    loading: metaLoading,
+    error: metaError,
+  } = useIpfsMetadata(listing.ipfs_hash);
   const [showMerkle, setShowMerkle] = useState(false);
 
   return (
@@ -59,7 +92,9 @@ export function ListingCard({ listing, wallet, onUpdated }) {
       <div className="lc__header">
         <span className="lc__id">Listing #{listing.id}</span>
         {listing.price_usdc > 0 && (
-          <span className="lc__price">{listing.price_usdc / 1_000_000} USDC</span>
+          <span className="lc__price">
+            {listing.price_usdc / 1_000_000} USDC
+          </span>
         )}
       </div>
 
@@ -75,7 +110,9 @@ export function ListingCard({ listing, wallet, onUpdated }) {
         {!metaLoading && meta && (
           <div className="lc__meta-preview">
             {meta.title && <p className="lc__meta-title">{meta.title}</p>}
-            {meta.description && <p className="lc__meta-desc">{meta.description}</p>}
+            {meta.description && (
+              <p className="lc__meta-desc">{meta.description}</p>
+            )}
             {meta.file_type && (
               <span className="lc__meta-badge">{meta.file_type}</span>
             )}

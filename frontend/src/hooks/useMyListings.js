@@ -6,30 +6,30 @@ import {
   getSwap,
 } from "../lib/contractClient";
 
-const POLL_INTERVAL_MS = 15_000;
+const POLL_INTERVAL_MS = 15_000; // re-fetch every 15 s
 
 /**
  * useMyListings
  *
- * Fetches all IP listings owned by the connected wallet, along with any
- * pending swaps against each listing.
+ * Fetches all listings for the connected seller and their pending swaps.
+ * Keeps them fresh via polling.
  *
- * @param {string|null} ownerAddress - Stellar public key, or null when disconnected
+ * @param {string|null} sellerAddress - Stellar public key, or null when disconnected
  * @returns {{
- *   listings: object[],   // each listing has a `pendingSwaps` array attached
+ *   listings: object[],
  *   loading: boolean,
  *   error: string|null,
  *   refresh: () => void,
  * }}
  */
-export function useMyListings(ownerAddress) {
+export function useMyListings(sellerAddress) {
   const [listings, setListings] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const timerRef = useRef(null);
 
   const fetchListings = useCallback(async () => {
-    if (!ownerAddress) {
+    if (!sellerAddress) {
       setListings([]);
       return;
     }
@@ -38,50 +38,62 @@ export function useMyListings(ownerAddress) {
     setError(null);
 
     try {
-      // Fetch listing IDs and all seller swap IDs in parallel
-      const [listingIds, sellerSwapIds] = await Promise.all([
-        getListingsByOwner(ownerAddress),
-        getSwapsBySeller(ownerAddress).catch(() => []),
-      ]);
+      // Get all listing IDs for this seller
+      const listingIds = await getListingsByOwner(sellerAddress);
 
       if (listingIds.length === 0) {
         setListings([]);
         return;
       }
 
-      // Fetch listing details and all seller swaps in parallel
-      const [listingResults, swapResults] = await Promise.all([
-        Promise.allSettled(listingIds.map((id) => getListing(id))),
-        Promise.allSettled(sellerSwapIds.map((id) => getSwap(id))),
-      ]);
+      // Fetch full listing details in parallel
+      const listingResults = await Promise.allSettled(
+        listingIds.map((id) => getListing(id))
+      );
 
+      // Filter out failures and nulls
       const loadedListings = listingResults
         .filter((r) => r.status === "fulfilled" && r.value !== null)
         .map((r) => r.value);
 
-      const allSellerSwaps = swapResults
-        .filter((r) => r.status === "fulfilled" && r.value !== null)
-        .map((r) => r.value)
-        .filter((s) => s.status === "Pending");
+      // Get all swaps for this seller
+      const swapIds = await getSwapsBySeller(sellerAddress);
 
-      // Attach pending swaps to their respective listing
-      const enriched = loadedListings.map((listing) => ({
+      // For each swap, fetch details and cross-reference with listings
+      const swapResults = await Promise.allSettled(
+        swapIds.map((id) => getSwap(id))
+      );
+
+      const swaps = swapResults
+        .filter((r) => r.status === "fulfilled" && r.value !== null)
+        .map((r) => r.value);
+
+      // Build a map of listing_id -> active swap (only pending)
+      const activeSwapsByListing = {};
+      swaps.forEach((swap) => {
+        if (swap.status === "Pending" && !activeSwapsByListing[swap.listing_id]) {
+          activeSwapsByListing[swap.listing_id] = swap;
+        }
+      });
+
+      // Enrich listings with their active swap
+      const enrichedListings = loadedListings.map((listing) => ({
         ...listing,
-        pendingSwaps: allSellerSwaps.filter(
-          (s) => s.listing_id === listing.id
-        ),
+        active_swap: activeSwapsByListing[listing.id] || null,
       }));
 
-      setListings(enriched);
+      setListings(enrichedListings);
     } catch (err) {
       setError(err.message || "Failed to load listings.");
     } finally {
       setLoading(false);
     }
-  }, [ownerAddress]);
+  }, [sellerAddress]);
 
+  // Initial fetch + polling
   useEffect(() => {
     fetchListings();
+
     timerRef.current = setInterval(fetchListings, POLL_INTERVAL_MS);
 
     // Optimization: pause polling when the tab is hidden to avoid unnecessary RPC calls

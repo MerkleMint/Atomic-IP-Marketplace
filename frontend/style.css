@@ -262,3 +262,43 @@ input, button {
     margin: 0;
     text-align: left;
 }
+
+/* ── Inline button spinner ─────────────────────────────────────────────── */
+.btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2.5px solid rgba(0, 0, 0, 0.15);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: btn-spin 0.65s linear infinite;
+    vertical-align: middle;
+}
+
+.btn-spinner--lg {
+    width: 20px;
+    height: 20px;
+}
+
+@keyframes btn-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Listings loading state */
+.listings-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 40px 20px;
+    font-size: 15px;
+    color: #666;
+    font-weight: 500;
+}
+
+/* Disabled initiate button during fetch */
+.initiate-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+}
