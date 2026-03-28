@@ -186,9 +186,9 @@ impl IpRegistry {
         admin: Address,
         ttl_threshold: u32,
         ttl_extend_to: u32,
-    ) -> Result<(), ContractError> {
+    ) {
         if env.storage().persistent().has(&DataKey::Config) {
-            return Err(ContractError::AlreadyInitialized);
+            panic_with_error!(env, ContractError::AlreadyInitialized);
         }
         let config = Config {
             admin,
@@ -199,7 +199,6 @@ impl IpRegistry {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Config, ttl_threshold, ttl_extend_to);
-        Ok(())
     }
 
     /// Admin-only: update TTL parameters. Emits a TtlUpdated event.
@@ -927,11 +926,8 @@ mod test {
 
     #[test]
     fn test_already_initialized() {
-        let (env, client, admin) = setup();
-        let result = client.try_initialize(&admin, &THRESHOLD, &EXTEND_TO);
-        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
-        // Ensure env is used to avoid unused variable warning
-        let _ = Address::generate(&env);
+        let (_env, client, admin) = setup();
+        assert!(client.try_initialize(&admin, &THRESHOLD, &EXTEND_TO).is_err());
     }
 
     #[test]
