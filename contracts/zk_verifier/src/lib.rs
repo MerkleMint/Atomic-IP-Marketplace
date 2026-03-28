@@ -115,9 +115,14 @@ impl ZkVerifier {
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MerkleRoot(listing_id))
+        let key = DataKey::MerkleRoot(listing_id);
+        let result = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        result
     }
 
     /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
@@ -292,6 +297,32 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
         assert_eq!(client.get_merkle_root(&42u64), Some(root));
+    }
+
+    #[test]
+    fn test_get_merkle_root_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"ttl_test_leaf");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        client.set_merkle_root(&owner, &99u64, &root);
+
+        // Advance ledger close to TTL expiry
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // Read the root — must extend TTL
+        assert_eq!(client.get_merkle_root(&99u64), Some(root.clone()));
+
+        // Advance again; root should still be alive (TTL was re-extended)
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        assert_eq!(client.get_merkle_root(&99u64), Some(root));
     }
 
     #[test]
