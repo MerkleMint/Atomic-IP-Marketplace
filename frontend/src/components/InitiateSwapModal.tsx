@@ -6,6 +6,8 @@ import "./InitiateSwapModal.css";
 const USDC_CONTRACT_ID = import.meta.env.VITE_CONTRACT_USDC ?? "";
 const USDC_DECIMALS = 7; // Stellar USDC uses 7 decimal places
 
+// Removed VITE_CONTRACT_ZK_VERIFIER since it's not used in this component
+
 export interface Listing {
   id: number;
   owner: string;
@@ -22,7 +24,12 @@ interface Props {
 
 type Step = "input" | "approving" | "initiating" | "success";
 
-export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props) {
+export function InitiateSwapModal({
+  listing,
+  wallet,
+  onClose,
+  onSuccess,
+}: Props) {
   const [amount, setAmount] = useState(
     listing.price_usdc > 0
       ? String(listing.price_usdc / Math.pow(10, USDC_DECIMALS))
@@ -36,13 +43,17 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
 
   // Close on Escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   // Focus trap
-  useEffect(() => { modalRef.current?.focus(); }, []);
+  useEffect(() => {
+    modalRef.current?.focus();
+  }, []);
 
   const usdcAmountRaw = (): bigint => {
     const parsed = parseFloat(amount);
@@ -50,18 +61,24 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
     return BigInt(Math.round(parsed * Math.pow(10, USDC_DECIMALS)));
   };
 
-  const minAmount = listing.price_usdc > 0
-    ? listing.price_usdc / Math.pow(10, USDC_DECIMALS)
-    : 0;
+  const minAmount =
+    listing.price_usdc > 0
+      ? listing.price_usdc / Math.pow(10, USDC_DECIMALS)
+      : 0;
 
-  const isValidAmount = parseFloat(amount) > 0 && parseFloat(amount) >= minAmount;
+  const isValidAmount =
+    parseFloat(amount) > 0 && parseFloat(amount) >= minAmount;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     if (!isValidAmount) {
-      setError(minAmount > 0 ? `Minimum amount is ${minAmount} USDC.` : "Enter a valid USDC amount.");
+      setError(
+        minAmount > 0
+          ? `Minimum amount is ${minAmount} USDC.`
+          : "Enter a valid USDC amount."
+      );
       return;
     }
 
@@ -70,7 +87,12 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
     try {
       // Step 1: Approve USDC
       setStep("approving");
-      await approveUsdc(USDC_CONTRACT_ID, import.meta.env.VITE_CONTRACT_ATOMIC_SWAP, raw, wallet);
+      await approveUsdc(
+        USDC_CONTRACT_ID,
+        import.meta.env.VITE_CONTRACT_ATOMIC_SWAP,
+        raw,
+        wallet
+      );
 
       // Step 2: Initiate swap
       setStep("initiating");
@@ -98,7 +120,9 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
       className="ism-backdrop"
       ref={backdropRef}
       role="presentation"
-      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      onClick={(e) => {
+        if (e.target === backdropRef.current) onClose();
+      }}
     >
       <div
         className="ism"
@@ -109,8 +133,17 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
         tabIndex={-1}
       >
         <div className="ism__header">
-          <h2 className="ism__title" id="ism-title">Initiate Swap</h2>
-          <button className="ism__close" onClick={onClose} aria-label="Close" disabled={busy}>×</button>
+          <h2 className="ism__title" id="ism-title">
+            Initiate Swap
+          </h2>
+          <button
+            className="ism__close"
+            onClick={onClose}
+            aria-label="Close"
+            disabled={busy}
+          >
+            ×
+          </button>
         </div>
 
         {/* Listing details */}
@@ -141,14 +174,22 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
 
         {step === "success" ? (
           <div className="ism__success">
-            <span className="ism__success-icon" aria-hidden="true">✅</span>
+            <span className="ism__success-icon" aria-hidden="true">
+              ✅
+            </span>
             <p>Swap initiated successfully!</p>
-            <p className="ism__swap-id">Swap ID: <strong>#{swapId}</strong></p>
-            <button className="ism__btn ism__btn--primary" onClick={onClose}>Close</button>
+            <p className="ism__swap-id">
+              Swap ID: <strong>#{swapId}</strong>
+            </p>
+            <button className="ism__btn ism__btn--primary" onClick={onClose}>
+              Close
+            </button>
           </div>
         ) : (
           <form className="ism__form" onSubmit={handleSubmit} noValidate>
-            <label className="ism__label" htmlFor="ism-amount">USDC Amount</label>
+            <label className="ism__label" htmlFor="ism-amount">
+              USDC Amount
+            </label>
             <div className="ism__input-wrap">
               <input
                 id="ism-amount"
@@ -165,18 +206,34 @@ export function InitiateSwapModal({ listing, wallet, onClose, onSuccess }: Props
               <span className="ism__input-suffix">USDC</span>
             </div>
 
-            {error && <p className="ism__error" role="alert">{error}</p>}
+            {error && (
+              <p className="ism__error" role="alert">
+                {error}
+              </p>
+            )}
 
             <div className="ism__steps">
-              <div className={`ism__step ${step === "approving" ? "ism__step--active" : ""} ${step === "initiating" ? "ism__step--done" : ""}`}>
+              <div
+                className={`ism__step ${
+                  step === "approving" ? "ism__step--active" : ""
+                } ${step === "initiating" ? "ism__step--done" : ""}`}
+              >
                 <span className="ism__step-num">1</span>
                 <span>Approve USDC</span>
-                {step === "approving" && <span className="ism__spinner" aria-hidden="true" />}
+                {step === "approving" && (
+                  <span className="ism__spinner" aria-hidden="true" />
+                )}
               </div>
-              <div className={`ism__step ${step === "initiating" ? "ism__step--active" : ""}`}>
+              <div
+                className={`ism__step ${
+                  step === "initiating" ? "ism__step--active" : ""
+                }`}
+              >
                 <span className="ism__step-num">2</span>
                 <span>Initiate Swap</span>
-                {step === "initiating" && <span className="ism__spinner" aria-hidden="true" />}
+                {step === "initiating" && (
+                  <span className="ism__spinner" aria-hidden="true" />
+                )}
               </div>
             </div>
 

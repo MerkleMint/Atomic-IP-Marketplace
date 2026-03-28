@@ -5,6 +5,7 @@ import {
   getSwapsBySeller,
   getSwap,
 } from "../lib/contractClient";
+import type { Listing } from "../lib/types";
 
 const POLL_INTERVAL_MS = 15_000;
 
@@ -23,10 +24,10 @@ const POLL_INTERVAL_MS = 15_000;
  * }}
  */
 export function useMyListings(ownerAddress: string | null) {
-  const [listings, setListings] = useState<any[]>([]);
+  const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const timerRef = useRef<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchListings = useCallback(async () => {
     if (!ownerAddress) {
@@ -56,23 +57,31 @@ export function useMyListings(ownerAddress: string | null) {
       ]);
 
       const loadedListings = listingResults
-        .filter((r: any) => r.status === "fulfilled" && r.value !== null)
-        .map((r: any) => r.value);
+        .filter(
+          (r: PromiseFulfilledResult<Listing | null>) =>
+            r.status === "fulfilled" && r.value !== null
+        )
+        .map((r: PromiseFulfilledResult<Listing>) => r.value) as Listing[];
 
       const allSellerSwaps = swapResults
-        .filter((r: any) => r.status === "fulfilled" && r.value !== null)
-        .map((r: any) => r.value)
-        .filter((s) => s.status === "Pending");
+        .filter(
+          (r: PromiseFulfilledResult<any>) =>
+            r.status === "fulfilled" && r.value !== null
+        )
+        .map((r: PromiseFulfilledResult<any>) => r.value)
+        .filter((s: any) => s.status === "Pending");
 
       // Attach pending swaps to their respective listing
-      const enriched = loadedListings.map((listing) => ({
+      const enriched: Listing[] = loadedListings.map((listing) => ({
         ...listing,
-        pendingSwaps: allSellerSwaps.filter((s) => s.listing_id === listing.id),
-      }));
+        pendingSwaps: allSellerSwaps.filter(
+          (s: any) => s.listing_id === listing.id
+        ),
+      })) as Listing[];
 
       setListings(enriched);
-    } catch (err: any) {
-      setError(err.message || "Failed to load listings.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load listings.");
     } finally {
       setLoading(false);
     }
@@ -84,5 +93,10 @@ export function useMyListings(ownerAddress: string | null) {
     return () => clearInterval(timerRef.current);
   }, [fetchListings]);
 
-  return { listings, loading, error, refresh: fetchListings };
+  return {
+    listings,
+    loading,
+    error,
+    refresh: fetchListings,
+  } as const;
 }
