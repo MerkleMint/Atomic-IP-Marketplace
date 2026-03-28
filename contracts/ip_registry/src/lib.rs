@@ -342,7 +342,7 @@ impl IpRegistry {
         let mut i: u32 = 0;
         while i < entries.len() {
             let (ipfs_hash, merkle_root, royalty_bps, _royalty_recipient, price_usdc) = entries.get(i).unwrap();
-            if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000 {
+            if ipfs_hash.is_empty() || merkle_root.is_empty() || royalty_bps > 10_000 {
                 panic_with_error!(&env, ContractError::InvalidInput);
             }
             if price_usdc <= 0 {
@@ -902,6 +902,73 @@ mod test {
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2"), 500, owner.clone(), 1000));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            0,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            -100,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_royalty_bps_above_10000() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_001,
+            owner.clone(),
+            1000,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_accepts_valid_price_and_royalty() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_000,
+            owner.clone(),
+            1,
+        ));
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 1);
+        let listing = client.get_listing(&ids.get(0).unwrap()).unwrap();
+        assert_eq!(listing.price_usdc, 1);
+        assert_eq!(listing.royalty_bps, 10_000);
     }
 
     #[test]
