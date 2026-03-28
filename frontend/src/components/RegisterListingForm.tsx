@@ -167,58 +167,60 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
   const [status, setStatus] = useState<SubmitStatus>("idle");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Validate a single field
+  const validateField = (field: keyof FormData, value: string): string | undefined => {
+    switch (field) {
+      case "ipfsHash":
+        if (!value.trim()) return "IPFS hash is required.";
+        if (!/^[0-9a-fA-F]+$/.test(value.replace(/^0x/, ""))) return "IPFS hash must be a valid hex string.";
+        return undefined;
+      case "merkleRoot":
+        if (!value.trim()) return "Merkle root is required.";
+        if (!/^[0-9a-fA-F]{64}$/.test(value.replace(/^0x/, "")))
+          return "Merkle root must be a 64-character hex string (32 bytes).";
+        return undefined;
+      case "priceUsdc":
+        const price = parseFloat(value);
+        if (!value.trim()) return "Price is required.";
+        if (isNaN(price) || price <= 0) return "Price must be greater than 0.";
+        return undefined;
+      case "royaltyBps":
+        const royalty = parseInt(value, 10);
+        if (!value.trim()) return "Royalty BPS is required.";
+        if (isNaN(royalty) || royalty < 0 || royalty > 10000) return "Royalty must be between 0 and 10000 basis points.";
+        return undefined;
+      case "royaltyRecipient":
+        if (!value.trim()) return "Royalty recipient address is required.";
+        if (!/^G[A-Z0-9]{55}$/.test(value)) return "Must be a valid Stellar address (G...)";
+        return undefined;
+      default:
+        return undefined;
+    }
+  };
+
+  // Validate all fields
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
-
-    // IPFS hash validation (non-empty, hex)
-    if (!formData.ipfsHash.trim()) {
-      newErrors.ipfsHash = "IPFS hash is required.";
-    } else if (!/^[0-9a-fA-F]+$/.test(formData.ipfsHash.replace(/^0x/, ""))) {
-      newErrors.ipfsHash = "IPFS hash must be a valid hex string.";
-    }
-
-    // Merkle root validation (non-empty, 64-char hex = 32 bytes)
-    if (!formData.merkleRoot.trim()) {
-      newErrors.merkleRoot = "Merkle root is required.";
-    } else {
-      const cleaned = formData.merkleRoot.replace(/^0x/, "");
-      if (!/^[0-9a-fA-F]{64}$/.test(cleaned)) {
-        newErrors.merkleRoot = "Merkle root must be a 64-character hex string (32 bytes).";
-      }
-    }
-
-    // Price validation (> 0)
-    const price = parseFloat(formData.priceUsdc);
-    if (!formData.priceUsdc.trim()) {
-      newErrors.priceUsdc = "Price is required.";
-    } else if (isNaN(price) || price <= 0) {
-      newErrors.priceUsdc = "Price must be greater than 0.";
-    }
-
-    // Royalty bps validation (0-10000)
-    const royalty = parseInt(formData.royaltyBps, 10);
-    if (!formData.royaltyBps.trim()) {
-      newErrors.royaltyBps = "Royalty BPS is required.";
-    } else if (isNaN(royalty) || royalty < 0 || royalty > 10000) {
-      newErrors.royaltyBps = "Royalty must be between 0 and 10000 basis points.";
-    }
-
-    // Royalty recipient validation (Stellar address format G...)
-    if (!formData.royaltyRecipient.trim()) {
-      newErrors.royaltyRecipient = "Royalty recipient address is required.";
-    } else if (!/^G[A-Z0-9]{55}$/.test(formData.royaltyRecipient)) {
-      newErrors.royaltyRecipient = "Must be a valid Stellar address (G...)";
-    }
-
+    (Object.keys(formData) as (keyof FormData)[]).forEach((field) => {
+      const error = validateField(field, formData[field]);
+      if (error) newErrors[field] = error;
+    });
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const handleChange = (field: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData((prev) => ({ ...prev, [field]: e.target.value }));
+    const value = e.target.value;
+    setFormData((prev) => ({ ...prev, [field]: value }));
     setErrors((prev) => ({ ...prev, [field]: undefined }));
     setStatus("idle");
     setSubmitError(null);
+  };
+
+  // Inline validation on blur
+  const handleBlur = (field: keyof FormData) => (e: React.FocusEvent<HTMLInputElement>) => {
+    const error = validateField(field, e.target.value);
+    setErrors((prev) => ({ ...prev, [field]: error }));
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -247,17 +249,17 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
     }
   };
 
+  // Disable submit until all fields valid
+  const isFormValid = (Object.keys(formData) as (keyof FormData)[]).every(
+    (field) => !validateField(field, formData[field])
+  );
+
   return (
     <div className="rlf">
       <div className="rlf__header">
         <h3 className="rlf__title">Register New IP</h3>
         {onCancel && (
-          <button
-            type="button"
-            className="rlf__close"
-            onClick={onCancel}
-            aria-label="Close form"
-          >
+          <button type="button" className="rlf__close" onClick={onCancel} aria-label="Close form">
             ✕
           </button>
         )}
@@ -284,13 +286,12 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               type="text"
               value={formData.ipfsHash}
               onChange={handleChange("ipfsHash")}
+              onBlur={handleBlur("ipfsHash")}
               placeholder="e.g. Qm... or 0x..."
               spellCheck={false}
               aria-describedby={errors.ipfsHash ? "ipfs-hash-error" : undefined}
             />
-            {errors.ipfsHash && (
-              <p id="ipfs-hash-error" className="rlf__error" role="alert">{errors.ipfsHash}</p>
-            )}
+            {errors.ipfsHash && <p id="ipfs-hash-error" className="rlf__error" role="alert">{errors.ipfsHash}</p>}
           </div>
 
           <div className="rlf__field">
@@ -303,14 +304,13 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               type="text"
               value={formData.merkleRoot}
               onChange={handleChange("merkleRoot")}
+              onBlur={handleBlur("merkleRoot")}
               placeholder="e.g. 0xa3f1...c9d2 (64 hex chars)"
               maxLength={66}
               spellCheck={false}
               aria-describedby={errors.merkleRoot ? "merkle-root-error" : undefined}
             />
-            {errors.merkleRoot && (
-              <p id="merkle-root-error" className="rlf__error" role="alert">{errors.merkleRoot}</p>
-            )}
+            {errors.merkleRoot && <p id="merkle-root-error" className="rlf__error" role="alert">{errors.merkleRoot}</p>}
           </div>
 
           <div className="rlf__field">
@@ -325,12 +325,11 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               step="0.0000001"
               value={formData.priceUsdc}
               onChange={handleChange("priceUsdc")}
+              onBlur={handleBlur("priceUsdc")}
               placeholder="e.g. 10.00"
               aria-describedby={errors.priceUsdc ? "price-usdc-error" : undefined}
             />
-            {errors.priceUsdc && (
-              <p id="price-usdc-error" className="rlf__error" role="alert">{errors.priceUsdc}</p>
-            )}
+            {errors.priceUsdc && <p id="price-usdc-error" className="rlf__error" role="alert">{errors.priceUsdc}</p>}
           </div>
 
           <div className="rlf__row">
@@ -346,12 +345,11 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
                 max="10000"
                 value={formData.royaltyBps}
                 onChange={handleChange("royaltyBps")}
+                onBlur={handleBlur("royaltyBps")}
                 placeholder="e.g. 2500 = 25%"
                 aria-describedby={errors.royaltyBps ? "royalty-bps-error" : undefined}
               />
-              {errors.royaltyBps && (
-                <p id="royalty-bps-error" className="rlf__error" role="alert">{errors.royaltyBps}</p>
-              )}
+              {errors.royaltyBps && <p id="royalty-bps-error" className="rlf__error" role="alert">{errors.royaltyBps}</p>}
               <span className="rlf__hint">10000 BPS = 100%</span>
             </div>
 
@@ -365,6 +363,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
                 type="text"
                 value={formData.royaltyRecipient}
                 onChange={handleChange("royaltyRecipient")}
+                onBlur={handleBlur("royaltyRecipient")}
                 placeholder="G..."
                 spellCheck={false}
                 aria-describedby={errors.royaltyRecipient ? "royalty-recipient-error" : undefined}
@@ -375,9 +374,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
             </div>
           </div>
 
-          {submitError && (
-            <p className="rlf__submit-error" role="alert">{submitError}</p>
-          )}
+          {submitError && <p className="rlf__submit-error" role="alert">{submitError}</p>}
 
           <div className="rlf__actions">
             {onCancel && (
@@ -393,7 +390,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
             <button
               type="submit"
               className="rlf__btn rlf__btn--primary"
-              disabled={status === "submitting"}
+              disabled={status === "submitting" || !isFormValid}
               aria-busy={status === "submitting"}
             >
               {status === "submitting" ? (
