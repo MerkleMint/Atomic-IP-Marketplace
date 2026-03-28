@@ -1,0 +1,233 @@
+/* ── WalletConnectButton ─────────────────────────────────────────────────── */
+
+.wck-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1.1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.wck-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.wck-btn--connect {
+  background: #6c63ff;
+  color: #fff;
+}
+
+.wck-btn--connect:hover:not(:disabled) {
+  background: #574fd6;
+}
+
+.wck-btn--disconnect {
+  background: transparent;
+  color: #e05252;
+  border: 1px solid #e05252;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+}
+
+.wck-btn--disconnect:hover {
+  background: #ffeaea;
+}
+
+/* ── Connected pill ──────────────────────────────────────────────────────── */
+
+.wck-connected {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.wck-address {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #444;
+  font-family: monospace;
+}
+
+.wck-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+
+/* ── Backdrop ────────────────────────────────────────────────────────────── */
+
+.wck-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: wck-fade-in 0.15s ease;
+}
+
+@keyframes wck-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Modal ───────────────────────────────────────────────────────────────── */
+
+.wck-modal {
+  background: #fff;
+  border-radius: 14px;
+  padding: 1.5rem;
+  width: min(420px, 92vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  outline: none;
+  animation: wck-slide-up 0.18s ease;
+}
+
+@keyframes wck-slide-up {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.wck-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.2rem;
+}
+
+.wck-modal__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0;
+  color: #1a1a2e;
+}
+
+.wck-modal__close {
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #888;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  transition: color 0.1s;
+}
+
+.wck-modal__close:hover {
+  color: #333;
+}
+
+/* ── Wallet list ─────────────────────────────────────────────────────────── */
+
+.wck-wallet-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.wck-wallet-item {
+  display: contents;
+}
+
+.wck-wallet-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1.5px solid #e8e8f0;
+  background: #fafafa;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+  position: relative;
+}
+
+.wck-wallet-btn:hover:not(:disabled) {
+  border-color: #6c63ff;
+  background: #f3f2ff;
+}
+
+.wck-wallet-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.wck-wallet-btn--install {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+.wck-wallet-btn--install:hover {
+  opacity: 1;
+}
+
+.wck-wallet-btn__name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1a1a2e;
+  min-width: 80px;
+}
+
+.wck-wallet-btn__desc {
+  font-size: 0.8rem;
+  color: #777;
+  flex: 1;
+}
+
+.wck-wallet-btn__badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #fff3cd;
+  color: #856404;
+  padding: 0.15rem 0.5rem;
+  border-radius: 20px;
+  border: 1px solid #ffc107;
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
+
+.wck-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ccc;
+  border-top-color: #6c63ff;
+  border-radius: 50%;
+  animation: wck-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes wck-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Error ───────────────────────────────────────────────────────────────── */
+
+.wck-modal__error {
+  margin: 0.8rem 0 0;
+  padding: 0.6rem 0.8rem;
+  background: #fff0f0;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: #b91c1c;
+}

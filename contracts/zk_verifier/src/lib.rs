@@ -192,7 +192,7 @@ mod test {
     extern crate std;
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger as _},
-        Bytes, Env, Event, Vec,
+        Bytes, Env, Vec,
     };
 
     fn poseidon_leaf(env: &Env, leaf: &Bytes) -> BytesN<32> {

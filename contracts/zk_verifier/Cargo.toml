@@ -11,5 +11,5 @@ soroban-sdk = { workspace = true }
 soroban-poseidon = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { workspace = true }
-soroban-poseidon = { workspace = true }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-poseidon = { workspace = true, features = ["testutils"] }

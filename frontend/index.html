@@ -8,8 +8,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>Atomic-IP Marketplace</h1>
-        <p class="warning"><strong>⚠️ Testnet Demo:</strong> Soroban Testnet. Use Freighter wallet or view-only. Hardcoded contract IDs.</p>
+        <header class="site-header">
+            <h1>Atomic-IP Marketplace</h1>
+            <!-- React wallet connect button mounts here -->
+            <div id="wallet-root"></div>
+        </header>
+        <p class="warning"><strong>⚠️ Testnet Demo:</strong> Soroban Testnet. Use Freighter, xBull, or Lobstr wallet. Hardcoded contract IDs.</p>
 
         <!-- Listings Section -->
         <section id="marketplace">
@@ -37,6 +41,9 @@
                 <p id="txResult"></p>
             </div>
         </div>
+
+        <!-- My Swaps Dashboard (React) -->
+        <div id="dashboard-root"></div>
 
         <!-- Key Reveal Section (existing) -->
         <section id="keyReveal">
@@ -71,6 +78,7 @@
         <p>Network: <span id="rpcUrl">https://soroban-testnet.stellar.org/soroban/rpc</span></p>
     </div>
     <script src="app.js"></script>
+    <script type="module" src="src/main.jsx"></script>
 </body>
 </html>
 

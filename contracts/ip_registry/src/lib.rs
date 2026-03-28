@@ -9,6 +9,8 @@ use soroban_sdk::{
 pub enum ContractError {
     InvalidInput = 1,
     CounterOverflow = 2,
+    ListingNotFound = 3,
+    Unauthorized = 4,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -182,7 +184,7 @@ mod test {
     extern crate std;
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger as _},
-        Env, Event,
+        Env,
     };
 
     #[test]
