@@ -62,6 +62,7 @@ pub struct Config {
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub cancel_delay_secs: u64,
+    pub swap_expiry_secs: u64,
     pub zk_verifier: Address,
     pub ip_registry: Address,
 }
@@ -185,6 +186,7 @@ impl AtomicSwap {
         fee_bps: u32,
         fee_recipient: Address,
         cancel_delay_secs: u64,
+        swap_expiry_secs: u64,
         zk_verifier: Address,
         ip_registry: Address,
     ) {
@@ -198,6 +200,7 @@ impl AtomicSwap {
                 fee_bps,
                 fee_recipient,
                 cancel_delay_secs,
+                swap_expiry_secs,
                 zk_verifier,
                 ip_registry,
             },
@@ -307,7 +310,7 @@ impl AtomicSwap {
         Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
 
         let now = env.ledger().timestamp();
-        let expires_at = now.saturating_add(config.cancel_delay_secs);
+        let expires_at = now.saturating_add(config.swap_expiry_secs);
 
         let active_listing_key = DataKey::ActiveListingSwap(listing_id);
         if let Some(existing_swap_id) = env
@@ -850,7 +853,7 @@ mod test {
         let admin = Address::generate(env);
         let fee_recipient = Address::generate(env);
         let zk_id = env.register(ZkVerifier, ());
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
     }
@@ -989,6 +992,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1084,6 +1088,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1201,6 +1206,7 @@ mod test {
             &250u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1248,6 +1254,7 @@ mod test {
             &0u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1290,6 +1297,7 @@ mod test {
             &250u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1331,6 +1339,7 @@ mod test {
             &250u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1370,6 +1379,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1410,7 +1420,9 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
+            &registry_id,
         );
 
         // No listing with this id exists in registry.
@@ -1445,6 +1457,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1479,6 +1492,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &120u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1513,6 +1527,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1554,6 +1569,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &120u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1780,7 +1796,7 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
         let zk_id = env.register(ZkVerifier, ());
         let dummy_registry = Address::generate(&env);
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &zk_id, &dummy_registry);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &3600u64, &zk_id, &dummy_registry);
 
         client.pause();
 
@@ -1804,7 +1820,7 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
         let zk_id = env.register(ZkVerifier, ());
         let dummy_registry = Address::generate(&env);
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &zk_id, &dummy_registry);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &3600u64, &zk_id, &dummy_registry);
 
         client.unpause();
 
@@ -1834,6 +1850,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1869,6 +1886,7 @@ mod test {
             &0u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1906,6 +1924,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -1940,7 +1959,9 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
+            &registry_id,
         );
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -1987,6 +2008,7 @@ mod test {
             &100u32,
             &fee_recipient,
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
@@ -2065,6 +2087,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &3600u64,
             &zk_id,
             &registry_id,
         );
