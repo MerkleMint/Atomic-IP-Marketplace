@@ -116,6 +116,8 @@ pub struct ListingRegistered {
     #[topic]
     pub owner: Address,
     pub ipfs_hash: Bytes,
+    pub price_usdc: i128,
+    pub royalty_bps: u32,
 }
 
 #[contractevent]
@@ -125,6 +127,8 @@ pub struct BatchIpRegistered {
     pub listing_ids: Vec<u64>,
     pub ipfs_hashes: Vec<Bytes>,
     pub merkle_roots: Vec<Bytes>,
+    pub prices_usdc: Vec<i128>,
+    pub royalty_bps_list: Vec<u32>,
 }
 
 #[contractevent]
@@ -351,6 +355,8 @@ impl IpRegistry {
             listing_id: id,
             owner,
             ipfs_hash,
+            price_usdc,
+            royalty_bps,
         }
         .publish(&env);
 
@@ -377,6 +383,8 @@ impl IpRegistry {
         let mut listing_ids: Vec<u64> = Vec::new(&env);
         let mut ipfs_hashes: Vec<Bytes> = Vec::new(&env);
         let mut merkle_roots: Vec<Bytes> = Vec::new(&env);
+        let mut prices_usdc: Vec<i128> = Vec::new(&env);
+        let mut royalty_bps_list: Vec<u32> = Vec::new(&env);
 
         // Optimization: Reduced OwnerIndex storage IO from O(N) to O(1) per batch.
         // Load the owner's index once before the loop; push IDs in-memory; flush once after.
@@ -422,11 +430,15 @@ impl IpRegistry {
             listing_ids.push_back(id);
             ipfs_hashes.push_back(entry.ipfs_hash.clone());
             merkle_roots.push_back(entry.merkle_root.clone());
+            prices_usdc.push_back(entry.price_usdc);
+            royalty_bps_list.push_back(entry.royalty_bps);
 
             ListingRegistered {
                 listing_id: id,
                 owner: owner.clone(),
                 ipfs_hash: entry.ipfs_hash,
+                price_usdc: entry.price_usdc,
+                royalty_bps: entry.royalty_bps,
             }
             .publish(&env);
 
@@ -446,6 +458,8 @@ impl IpRegistry {
             listing_ids: listing_ids.clone(),
             ipfs_hashes,
             merkle_roots,
+            prices_usdc,
+            royalty_bps_list,
         }
         .publish(&env);
 
@@ -1064,10 +1078,19 @@ mod test {
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
         entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash1"), merkle_root: Bytes::from_slice(&env, b"root1"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
-        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash2"), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
+        entries.push_back(IpEntry { ipfs_hash: Bytes::from_slice(&env, b"QmHash2"), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 200, royalty_recipient: owner.clone(), price_usdc: 2000 });
         client.batch_register_ip(&owner, &entries);
-        // Events are emitted; verify no panic and count is correct.
+
         assert_eq!(client.listing_count(), 2);
+
+        // Verify price_usdc and royalty_bps are stored correctly (sourced from the same
+        // variables used to populate the event fields).
+        let l1 = client.get_listing(&1).unwrap();
+        assert_eq!(l1.price_usdc, 1000);
+        assert_eq!(l1.royalty_bps, 500);
+        let l2 = client.get_listing(&2).unwrap();
+        assert_eq!(l2.price_usdc, 2000);
+        assert_eq!(l2.royalty_bps, 200);
     }
 
     /// Verifies that OwnerIndex is written exactly once per batch call (O(1) index IO).
@@ -1357,28 +1380,20 @@ mod test {
     fn test_register_ip_emits_listing_registered() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let hash = b"QmHash";
-        let root = b"root";
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        let root = Bytes::from_slice(&env, b"root");
         let price = 1000i128;
+        let royalty = 500u32;
 
-        client.register_ip(
-            &owner,
-            &Bytes::from_slice(&env, hash),
-            &Bytes::from_slice(&env, root),
-            &0u32,
-            &owner,
-            &price,
-        );
+        client.register_ip(&owner, &hash, &root, &royalty, &owner, &price);
 
+        // Verify the event was emitted and the listing stores the expected fields
         let events = env.events().all().filter_by_contract(&client.address);
-        assert!(
-            !events.events().is_empty(),
-            "ListingRegistered event should be emitted"
-        );
-        
-        // Verify an event was emitted (simplified test)
-        let event_count = events.events().len();
-        assert!(event_count >= 1, "At least one event should be emitted");
+        assert!(!events.events().is_empty(), "ListingRegistered event should be emitted");
+
+        let listing = client.get_listing(&1).unwrap();
+        assert_eq!(listing.price_usdc, price);
+        assert_eq!(listing.royalty_bps, royalty);
     }
 
     // ── TTL persistence tests ────────────────────────────────────────────────
