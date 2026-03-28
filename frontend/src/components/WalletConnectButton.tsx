@@ -2,9 +2,11 @@ import { useState, useEffect, useRef } from "react";
 import { useWallet } from "../context/WalletContext";
 import type { ISupportedWallet } from "../lib/walletKit";
 import "./WalletConnectButton.css";
+import { CopyButton } from "./CopyButton";
 
 export function WalletConnectButton() {
-  const { wallet, connecting, error, availableWallets, connect, disconnect } = useWallet();
+  const { wallet, connecting, error, availableWallets, connect, disconnect } =
+    useWallet();
   const [modalOpen, setModalOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -12,7 +14,9 @@ export function WalletConnectButton() {
 
   useEffect(() => {
     if (!modalOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setModalOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModalOpen(false);
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [modalOpen]);
@@ -28,7 +32,9 @@ export function WalletConnectButton() {
       await connect(walletId);
       setModalOpen(false);
     } catch (err) {
-      setConnectError(err instanceof Error ? err.message : "Connection failed.");
+      setConnectError(
+        err instanceof Error ? err.message : "Connection failed.",
+      );
     } finally {
       setPendingId(null);
     }
@@ -38,11 +44,17 @@ export function WalletConnectButton() {
     const short = `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`;
     return (
       <div className="wck-connected">
-        <span className="wck-address" title={wallet.address}>
-          <span className="wck-dot" aria-hidden="true" />
-          {wallet.walletId} · {short}
-        </span>
-        <button className="wck-btn wck-btn--disconnect" onClick={disconnect}>Disconnect</button>
+        <div className="wck-address-row">
+          <span className="wck-address" title={wallet.address}>
+            <span className="wck-dot" aria-hidden="true" />
+            {wallet.walletId} · {short}
+          </span>
+
+          <CopyButton text={wallet.address} />
+        </div>
+        <button className="wck-btn wck-btn--disconnect" onClick={disconnect}>
+          Disconnect
+        </button>
       </div>
     );
   }
@@ -54,15 +66,24 @@ export function WalletConnectButton() {
     <>
       <button
         className="wck-btn wck-btn--connect"
-        onClick={() => { setConnectError(null); setModalOpen(true); }}
+        onClick={() => {
+          setConnectError(null);
+          setModalOpen(true);
+        }}
         disabled={connecting}
         aria-busy={connecting}
       >
-        {connecting ? "Connecting…" : isReconnectFailed ? "Reconnection failed" : "Connect Wallet"}
+        {connecting
+          ? "Connecting…"
+          : isReconnectFailed
+            ? "Reconnection failed"
+            : "Connect Wallet"}
       </button>
 
       {isReconnectFailed && (
-        <p className="wck-btn--error" role="alert">{error}</p>
+        <p className="wck-btn--error" role="alert">
+          {error}
+        </p>
       )}
 
       {modalOpen && (
@@ -71,12 +92,20 @@ export function WalletConnectButton() {
           role="dialog"
           aria-modal="true"
           aria-label="Select a wallet"
-          onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setModalOpen(false);
+          }}
         >
           <div className="wck-modal" ref={modalRef} tabIndex={-1}>
             <div className="wck-modal__header">
               <h2 className="wck-modal__title">Connect Wallet</h2>
-              <button className="wck-modal__close" onClick={() => setModalOpen(false)} aria-label="Close">×</button>
+              <button
+                className="wck-modal__close"
+                onClick={() => setModalOpen(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
             </div>
             <ul className="wck-wallet-list" role="list">
               {availableWallets.map((w: ISupportedWallet) => {
@@ -90,14 +119,21 @@ export function WalletConnectButton() {
                       aria-busy={isPending}
                     >
                       <span className="wck-wallet-btn__name">{w.name}</span>
-                      {isPending && <span className="wck-spinner" aria-label="Connecting…" />}
+                      {isPending && (
+                        <span
+                          className="wck-spinner"
+                          aria-label="Connecting…"
+                        />
+                      )}
                     </button>
                   </li>
                 );
               })}
             </ul>
             {(connectError || error) && (
-              <p className="wck-modal__error" role="alert">{connectError || error}</p>
+              <p className="wck-modal__error" role="alert">
+                {connectError || error}
+              </p>
             )}
           </div>
         </div>

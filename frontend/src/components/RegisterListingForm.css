@@ -16,6 +16,12 @@
   gap: 1rem;
 }
 
+.rlf__input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .rlf__title {
   font-size: 1.1rem;
   font-weight: 700;
@@ -193,7 +199,9 @@
 }
 
 @keyframes rlf-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .rlf__success {

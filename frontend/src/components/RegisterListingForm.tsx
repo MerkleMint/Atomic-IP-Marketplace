@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { registerIp } from "../lib/contractClient";
 import type { Wallet } from "../lib/walletKit";
 import "./RegisterListingForm.css";
+import { CopyButton } from "./CopyButton";
 
 interface Props {
   wallet: Wallet;
@@ -56,7 +57,8 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
     } else {
       const cleaned = formData.merkleRoot.replace(/^0x/, "");
       if (!/^[0-9a-fA-F]{64}$/.test(cleaned)) {
-        newErrors.merkleRoot = "Merkle root must be a 64-character hex string (32 bytes).";
+        newErrors.merkleRoot =
+          "Merkle root must be a 64-character hex string (32 bytes).";
       }
     }
 
@@ -73,7 +75,8 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
     if (!formData.royaltyBps.trim()) {
       newErrors.royaltyBps = "Royalty BPS is required.";
     } else if (isNaN(royalty) || royalty < 0 || royalty > 10000) {
-      newErrors.royaltyBps = "Royalty must be between 0 and 10000 basis points.";
+      newErrors.royaltyBps =
+        "Royalty must be between 0 and 10000 basis points.";
     }
 
     // Royalty recipient validation (Stellar address format G...)
@@ -87,12 +90,13 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleChange = (field: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData((prev) => ({ ...prev, [field]: e.target.value }));
-    setErrors((prev) => ({ ...prev, [field]: undefined }));
-    setStatus("idle");
-    setSubmitError(null);
-  };
+  const handleChange =
+    (field: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement>) => {
+      setFormData((prev) => ({ ...prev, [field]: e.target.value }));
+      setErrors((prev) => ({ ...prev, [field]: undefined }));
+      setStatus("idle");
+      setSubmitError(null);
+    };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -108,7 +112,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
         parseInt(formData.royaltyBps, 10),
         formData.royaltyRecipient,
         parseFloat(formData.priceUsdc),
-        wallet
+        wallet,
       );
       setStatus("success");
       if (onSuccess) {
@@ -116,7 +120,11 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
       }
     } catch (err) {
       setStatus("error");
-      setSubmitError(err instanceof Error ? err.message : "Transaction failed. Please try again.");
+      setSubmitError(
+        err instanceof Error
+          ? err.message
+          : "Transaction failed. Please try again.",
+      );
     }
   };
 
@@ -138,7 +146,9 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
 
       {status === "success" ? (
         <div className="rlf__success">
-          <span className="rlf__success-icon" aria-hidden="true">✓</span>
+          <span className="rlf__success-icon" aria-hidden="true">
+            ✓
+          </span>
           <p>IP registered successfully!</p>
         </div>
       ) : (
@@ -162,7 +172,9 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               aria-describedby={errors.ipfsHash ? "ipfs-hash-error" : undefined}
             />
             {errors.ipfsHash && (
-              <p id="ipfs-hash-error" className="rlf__error" role="alert">{errors.ipfsHash}</p>
+              <p id="ipfs-hash-error" className="rlf__error" role="alert">
+                {errors.ipfsHash}
+              </p>
             )}
           </div>
 
@@ -179,10 +191,14 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               placeholder="e.g. 0xa3f1...c9d2 (64 hex chars)"
               maxLength={66}
               spellCheck={false}
-              aria-describedby={errors.merkleRoot ? "merkle-root-error" : undefined}
+              aria-describedby={
+                errors.merkleRoot ? "merkle-root-error" : undefined
+              }
             />
             {errors.merkleRoot && (
-              <p id="merkle-root-error" className="rlf__error" role="alert">{errors.merkleRoot}</p>
+              <p id="merkle-root-error" className="rlf__error" role="alert">
+                {errors.merkleRoot}
+              </p>
             )}
           </div>
 
@@ -199,10 +215,14 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               value={formData.priceUsdc}
               onChange={handleChange("priceUsdc")}
               placeholder="e.g. 10.00"
-              aria-describedby={errors.priceUsdc ? "price-usdc-error" : undefined}
+              aria-describedby={
+                errors.priceUsdc ? "price-usdc-error" : undefined
+              }
             />
             {errors.priceUsdc && (
-              <p id="price-usdc-error" className="rlf__error" role="alert">{errors.priceUsdc}</p>
+              <p id="price-usdc-error" className="rlf__error" role="alert">
+                {errors.priceUsdc}
+              </p>
             )}
           </div>
 
@@ -220,10 +240,14 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
                 value={formData.royaltyBps}
                 onChange={handleChange("royaltyBps")}
                 placeholder="e.g. 2500 = 25%"
-                aria-describedby={errors.royaltyBps ? "royalty-bps-error" : undefined}
+                aria-describedby={
+                  errors.royaltyBps ? "royalty-bps-error" : undefined
+                }
               />
               {errors.royaltyBps && (
-                <p id="royalty-bps-error" className="rlf__error" role="alert">{errors.royaltyBps}</p>
+                <p id="royalty-bps-error" className="rlf__error" role="alert">
+                  {errors.royaltyBps}
+                </p>
               )}
               <span className="rlf__hint">10000 BPS = 100%</span>
             </div>
@@ -232,24 +256,41 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               <label className="rlf__label" htmlFor="royalty-recipient">
                 Royalty Recipient <span className="rlf__required">*</span>
               </label>
-              <input
-                id="royalty-recipient"
-                className={`rlf__input rlf__input--mono ${errors.royaltyRecipient ? "rlf__input--error" : ""}`}
-                type="text"
-                value={formData.royaltyRecipient}
-                onChange={handleChange("royaltyRecipient")}
-                placeholder="G..."
-                spellCheck={false}
-                aria-describedby={errors.royaltyRecipient ? "royalty-recipient-error" : undefined}
-              />
+              <div className="rlf__input-row">
+                <input
+                  id="royalty-recipient"
+                  className={`rlf__input rlf__input--mono ${errors.royaltyRecipient ? "rlf__input--error" : ""}`}
+                  type="text"
+                  value={formData.royaltyRecipient}
+                  onChange={handleChange("royaltyRecipient")}
+                  placeholder="G..."
+                  spellCheck={false}
+                  aria-describedby={
+                    errors.royaltyRecipient
+                      ? "royalty-recipient-error"
+                      : undefined
+                  }
+                />
+                {formData.royaltyRecipient && (
+                  <CopyButton text={formData.royaltyRecipient} />
+                )}
+              </div>
               {errors.royaltyRecipient && (
-                <p id="royalty-recipient-error" className="rlf__error" role="alert">{errors.royaltyRecipient}</p>
+                <p
+                  id="royalty-recipient-error"
+                  className="rlf__error"
+                  role="alert"
+                >
+                  {errors.royaltyRecipient}
+                </p>
               )}
             </div>
           </div>
 
           {submitError && (
-            <p className="rlf__submit-error" role="alert">{submitError}</p>
+            <p className="rlf__submit-error" role="alert">
+              {submitError}
+            </p>
           )}
 
           <div className="rlf__actions">
