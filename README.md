@@ -1,6 +1,6 @@
 # Atomic IP Marketplace
 
-[![CI](https://github.com/unixfundz/Atomic-IP-Marketplace/actions/workflows/ci.yml/badge.svg)](https://github.com/unixfundz/Atomic-IP-Marketplace/actions/workflows/ci.yml)
+[![CI](https://github.com/MerkleMint/Atomic-IP-Marketplace/actions/workflows/ci.yml/badge.svg)](https://github.com/MerkleMint/Atomic-IP-Marketplace/actions/workflows/ci.yml)
 
 Soroban smart contracts for atomic IP swaps using USDC, IP registry, and ZK verification.
 
@@ -118,7 +118,8 @@ Run tests:
 ```
 
 ## Security
-[SECURITY.md](./SECURITY.md)
+
+Please report vulnerabilities privately — do not open public issues for security bugs. See [SECURITY.md](./SECURITY.md) for the full responsible disclosure policy.
 
 ## License
 This project is licensed under the Apache License 2.0. See the [LICENSE](./LICENSE) file for details.
