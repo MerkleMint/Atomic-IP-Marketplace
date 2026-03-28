@@ -45,6 +45,8 @@ pub enum ContractError {
     InvalidToken = 20,
     /// Fee basis points exceeds 10,000 (100%).
     FeeBpsTooHigh = 21,
+    /// confirmed_at_ledger is None on a swap that should have been confirmed.
+    MissingConfirmationLedger = 22,
 }
 
 #[contracttype]
@@ -1852,6 +1854,31 @@ mod test {
             result,
             Err(Ok(soroban_sdk::Error::from_contract_error(
                 ContractError::DisputeWindowActive as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_raise_dispute_on_pending_swap_returns_swap_not_completed() {
+        // raise_dispute on a Pending swap (confirmed_at_ledger is None) must
+        // return a typed ContractError rather than an unstructured panic.
+        // The SwapNotCompleted guard fires before the confirmed_at_ledger unwrap,
+        // which is the correct structured-error path for this state.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let swap_id = pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id);
+
+        let result = client.try_raise_dispute(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::SwapNotCompleted as u32
             )))
         );
     }
