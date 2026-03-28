@@ -43,5 +43,5 @@ No formal bug bounty program yet. Responsible disclosures may receive recognitio
 
 ---
 
-*Last updated: October 2024*
+*Last updated: March 2026*
 *Project: Atomic IP Marketplace (Soroban contracts)*

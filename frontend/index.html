@@ -4,12 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Atomic Swap Marketplace</title>
-    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header class="site-header">
             <h1>Atomic-IP Marketplace</h1>
+            <!-- React network selector mounts here -->
+            <div id="network-root"></div>
             <!-- React wallet connect button mounts here -->
             <div id="wallet-root"></div>
         </header>
@@ -42,8 +43,12 @@
             </div>
         </div>
 
-        <!-- My Swaps Dashboard (React) -->
+        <!-- My Dashboards (React) -->
         <div id="dashboard-root"></div>
+        <div id="listings-dashboard-root"></div>
+
+        <!-- My Listings Dashboard (React) -->
+        <div id="listings-dashboard-root"></div>
 
         <!-- Key Reveal Section (existing) -->
         <section id="keyReveal">
@@ -77,8 +82,7 @@
 
         <p>Network: <span id="rpcUrl">https://soroban-testnet.stellar.org/soroban/rpc</span></p>
     </div>
-    <script src="app.js"></script>
-    <script type="module" src="src/main.jsx"></script>
+    <script type="module" src="src/main.tsx"></script>
 </body>
 </html>
 
