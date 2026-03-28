@@ -692,6 +692,10 @@ impl AtomicSwap {
             .and_then(|swap| swap.decryption_key)
     }
 
+    pub fn get_config(env: Env) -> Option<Config> {
+        env.storage().instance().get(&DataKey::Config)
+    }
+
     /// Returns true if there is a pending swap for the given listing_id.
     pub fn has_pending_swap(env: Env, listing_id: u64) -> bool {
         if let Some(swap_id) = env
@@ -1849,6 +1853,45 @@ mod test {
         assert_eq!(swap.seller, seller);
         assert_eq!(swap.usdc_amount, 500);
         assert_eq!(swap.status, SwapStatus::Pending);
+    }
+
+    #[test]
+    fn test_get_config_returns_initialized_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let fee_bps = 250u32;
+        let cancel_delay_secs = 60u64;
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &admin,
+            &fee_bps,
+            &fee_recipient,
+            &cancel_delay_secs,
+            &zk_id,
+            &registry_id,
+        );
+
+        let config = client.get_config();
+        assert_eq!(config, Some(Config {
+            fee_bps,
+            fee_recipient,
+            cancel_delay_secs,
+            zk_verifier: zk_id,
+            ip_registry: registry_id,
+        }));
+
+        // Test None before init
+        let env2 = Env::default();
+        let contract_id2 = env2.register(AtomicSwap, ());
+        let client2 = AtomicSwapClient::new(&env2, &contract_id2);
+        assert_eq!(client2.get_config(), None);
     }
 
     #[test]
