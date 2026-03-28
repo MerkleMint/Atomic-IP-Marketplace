@@ -182,6 +182,16 @@ pub struct DisputeRaised {
     pub buyer: Address,
 }
 
+/// Emitted when the admin updates the protocol config.
+#[contractevent]
+pub struct ConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -263,6 +273,42 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    pub fn update_config(
+        env: Env,
+        fee_bps: u32,
+        fee_recipient: Address,
+        cancel_delay_secs: u64,
+    ) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        if fee_bps > 10_000 {
+            env.panic_with_error(ContractError::FeeBpsTooHigh);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.fee_bps = fee_bps;
+        config.fee_recipient = fee_recipient.clone();
+        config.cancel_delay_secs = cancel_delay_secs;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        ConfigUpdated {
+            admin,
+            fee_bps,
+            fee_recipient,
+            cancel_delay_secs,
+        }
+        .publish(&env);
     }
 
     pub fn pause(env: Env) {
@@ -2195,6 +2241,85 @@ mod test {
         let contract_id2 = env2.register(AtomicSwap, ());
         let client2 = AtomicSwapClient::new(&env2, &contract_id2);
         assert_eq!(client2.get_config(), None);
+    }
+
+    #[test]
+    fn test_update_config_authorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &100u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
+
+        let new_recipient = Address::generate(&env);
+        client.update_config(&200u32, &new_recipient, &120u64);
+
+        let config = client.get_config().expect("config should exist");
+        assert_eq!(config.fee_bps, 200);
+        assert_eq!(config.fee_recipient, new_recipient);
+        assert_eq!(config.cancel_delay_secs, 120);
+        // zk_verifier and ip_registry must be unchanged
+        assert_eq!(config.zk_verifier, zk_id);
+        assert_eq!(config.ip_registry, registry_id);
+    }
+
+    #[test]
+    fn test_update_config_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &100u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
+
+        // mock_all_auths is on, so to test unauthorized we use a fresh env without mocking
+        let env2 = Env::default();
+        let contract_id2 = env2.register(AtomicSwap, ());
+        let client2 = AtomicSwapClient::new(&env2, &contract_id2);
+        let admin2 = Address::generate(&env2);
+        let fee_recipient2 = Address::generate(&env2);
+        let zk_id2 = env2.register(ZkVerifier, ());
+        let registry_id2 = env2.register(IpRegistry, ());
+        env2.mock_all_auths();
+        client2.initialize(&admin2, &100u32, &fee_recipient2, &60u64, &3600u64, &zk_id2, &registry_id2);
+
+        // Call without providing auth — should fail
+        let env3 = Env::default(); // no mock_all_auths
+        let contract_id3 = env3.register(AtomicSwap, ());
+        let client3 = AtomicSwapClient::new(&env3, &contract_id3);
+        let result = client3.try_update_config(&200u32, &Address::generate(&env3), &120u64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_config_rejects_fee_bps_too_high() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &100u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
+
+        let result = client.try_update_config(&10_001u32, &fee_recipient, &60u64);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::FeeBpsTooHigh as u32
+            )))
+        );
     }
 
     #[test]
