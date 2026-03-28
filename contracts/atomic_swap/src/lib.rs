@@ -130,6 +130,15 @@ pub struct SwapCompleted {
     pub seller: Address,
 }
 
+/// Emitted after funds are successfully transferred to the seller via release_to_seller.
+#[contractevent]
+pub struct FundsReleased {
+    #[topic]
+    pub swap_id: u64,
+    pub seller: Address,
+    pub amount: i128,
+}
+
 /// Emitted when the contract is paused by the admin.
 #[contractevent]
 pub struct ContractPausedEvent {
@@ -538,6 +547,13 @@ impl AtomicSwap {
             usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
         }
         usdc.transfer(&contract_addr, &swap.seller, &seller_amount);
+
+        FundsReleased {
+            swap_id,
+            seller: swap.seller.clone(),
+            amount: seller_amount,
+        }
+        .publish(&env);
 
         swap.status = SwapStatus::ResolvedSeller;
         env.storage().persistent().set(&key, &swap);
@@ -1041,6 +1057,21 @@ mod test {
         assert_eq!(usdc_client.balance(&seller), 500);
         assert_eq!(usdc_client.balance(&buyer), 0);
         assert_eq!(usdc_client.balance(&contract_id), 0);
+
+        // Assert exactly one FundsReleased event with correct swap_id, seller, and amount.
+        // topics: [swap_id]  data: (seller, amount)
+        let events = env.events().all();
+        let swap_id_val: soroban_sdk::Val = swap_id.into_val(&env);
+        let expected_data = (seller.clone(), 500i128).into_val(&env);
+        let matching: Vec<_> = events
+            .iter()
+            .filter(|(_, topics, data)| {
+                topics.len() == 1
+                    && topics.get_unchecked(0) == swap_id_val
+                    && *data == expected_data
+            })
+            .collect();
+        assert_eq!(matching.len(), 1, "expected exactly one FundsReleased event");
     }
 
     #[test]
