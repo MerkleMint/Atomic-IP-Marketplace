@@ -1,6 +1,7 @@
 import { useWallet } from "../context/WalletContext";
 import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
+import type { Listing, Wallet } from "../lib/types";
 import "./MyListingsDashboard.css";
 
 /**
@@ -14,7 +15,7 @@ import "./MyListingsDashboard.css";
 export function MyListingsDashboard() {
   const { wallet } = useWallet();
   const { listings, loading, error, refresh } = useMyListings(
-    wallet?.address ?? null,
+    wallet?.address ?? null
   );
 
   if (!wallet) {
