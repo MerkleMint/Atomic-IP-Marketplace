@@ -160,6 +160,14 @@ pub struct DisputeResolved {
     pub favor_buyer: bool,
 }
 
+/// Emitted when a buyer raises a dispute on a completed swap.
+#[contractevent]
+pub struct DisputeRaised {
+    #[topic]
+    pub swap_id: u64,
+    pub buyer: Address,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -569,6 +577,12 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        DisputeRaised {
+            swap_id,
+            buyer: swap.buyer,
+        }
+        .publish(&env);
     }
 
     pub fn resolve_dispute(env: Env, swap_id: u64, favor_buyer: bool) {
@@ -1655,6 +1669,41 @@ mod test {
         );
         client.raise_dispute(&swap_id);
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Disputed));
+    }
+
+    #[test]
+    fn test_raise_dispute_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let swap_id = confirmed_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id,
+            &zk_id, &proof_path, &key_bytes,
+        );
+        client.raise_dispute(&swap_id);
+
+        let swap_id_val: soroban_sdk::Val = swap_id.into_val(&env);
+        let swap_id_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &swap_id_val).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("dispute_raised".try_into().unwrap());
+        let buyer_val: soroban_sdk::Val = buyer.into_val(&env);
+        let buyer_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &buyer_val).unwrap();
+
+        let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 2
+                && body.topics[0] == name_xdr
+                && body.topics[1] == swap_id_xdr
+                && body.data == buyer_xdr
+        });
+        assert!(found, "DisputeRaised event not emitted");
     }
 
     #[test]
