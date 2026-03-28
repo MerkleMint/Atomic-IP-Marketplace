@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atomic Swap Marketplace</title>
+</head>
+<body>
+    <div class="container">
+        <header class="site-header">
+            <h1>Atomic-IP Marketplace</h1>
+            <!-- React network selector mounts here -->
+            <div id="network-root"></div>
+            <!-- React wallet connect button mounts here -->
+            <div id="wallet-root"></div>
+        </header>
+        <p class="warning"><strong>⚠️ Testnet Demo:</strong> Soroban Testnet. Use Freighter, xBull, or Lobstr wallet. Hardcoded contract IDs.</p>
+
+        <!-- Listings Section -->
+        <section id="marketplace">
+            <h2>Available IP Listings</h2>
+            <div id="listingsGrid" class="listings-grid">
+                <!-- Listings populated by JS -->
+            </div>
+            <p id="listingsError" class="error hidden"></p>
+        </section>
+
+        <!-- Initiate Swap Modal -->
+        <div id="initiateModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Initiate Swap</h2>
+                <div id="listingDetails">
+                    <!-- Listing details populated by JS -->
+                </div>
+                <label for="usdcAmount">USDC Amount:</label>
+                <input type="number" id="usdcAmount" placeholder="e.g. 1000" min="1" step="0.01">
+                <div class="button-group">
+                    <button id="approveBtn" disabled>Approve USDC</button>
+                    <button id="initiateBtn" disabled>Initiate Swap</button>
+                </div>
+                <p id="txResult"></p>
+            </div>
+        </div>
+
+        <!-- My Dashboards (React) -->
+        <div id="dashboard-root"></div>
+        <div id="listings-dashboard-root"></div>
+
+        <!-- My Listings Dashboard (React) -->
+        <div id="listings-dashboard-root"></div>
+
+        <!-- Key Reveal Section (existing) -->
+        <section id="keyReveal">
+            <h2>Reveal Decryption Key</h2>
+            <form id="keyForm">
+                <label for="contractId">Atomic Swap Contract ID:</label>
+                <input type="text" id="contractId" placeholder="CA..." required>
+
+                <label for="swapId">Swap ID:</label>
+                <input type="number" id="swapId" placeholder="1" required>
+
+                <button type="submit">Fetch Status & Key</button>
+            </form>
+
+            <div id="result" class="result hidden">
+                <h2>Status: <span id="status"></span></h2>
+                <div id="keySection" class="hidden">
+                    <h3>Decryption Key:</h3>
+                    <textarea id="key" readonly></textarea>
+                    <button id="copyBtn">Copy Key</button>
+                </div>
+                <div id="ipfsDecrypt" class="hidden">
+                    <h3>Demo Decrypt:</h3>
+                    <label for="cid">IPFS CID:</label>
+                    <input type="text" id="cid" placeholder="Qm...">
+                    <button id="decryptBtn">Decrypt</button>
+                    <p id="decryptResult"></p>
+                </div>
+            </div>
+        </section>
+
+        <p>Network: <span id="rpcUrl">https://soroban-testnet.stellar.org/soroban/rpc</span></p>
+    </div>
+    <script type="module" src="src/main.tsx"></script>
+</body>
+</html>
+

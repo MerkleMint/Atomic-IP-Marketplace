@@ -69,7 +69,40 @@ set_env_var CONTRACT_ATOMIC_SWAP "$ATOMIC_SWAP"
 set_env_var CONTRACT_ZK_VERIFIER "$ZK_VERIFIER"
 rm -f .env.bak
 
-echo "Deployment complete. Updated .env with deployed contract IDs."
-echo "CONTRACT_IP_REGISTRY=$IP_REGISTRY"
-echo "CONTRACT_ATOMIC_SWAP=$ATOMIC_SWAP"
-echo "CONTRACT_ZK_VERIFIER=$ZK_VERIFIER"
+echo ""
+echo "=========================================="
+echo "Deployment complete!"
+echo "=========================================="
+echo "Contract addresses:"
+echo "  IP_REGISTRY:   $IP_REGISTRY"
+echo "  ATOMIC_SWAP:   $ATOMIC_SWAP"
+echo "  ZK_VERIFIER:   $ZK_VERIFIER"
+echo "=========================================="
+echo "Updated .env with deployed contract IDs."
+echo ""
+
+echo ""
+echo "Running post-deployment smoke tests..."
+
+echo "  [ip_registry] get_listing(999) -> expect None"
+if ! stellar contract invoke \
+  --id "$IP_REGISTRY" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- get_listing --listing_id 999; then
+  echo "Failed to invoke get_listing on ip_registry: $IP_REGISTRY" >&2
+  exit 1
+fi
+
+echo "  [zk_verifier] get_merkle_root(999) -> expect None"
+if ! stellar contract invoke \
+  --id "$ZK_VERIFIER" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- get_merkle_root --listing_id 999; then
+  echo "Failed to invoke get_merkle_root on zk_verifier: $ZK_VERIFIER" >&2
+  exit 1
+fi
+
+echo ""
+echo "✓ Smoke tests passed. All three contracts are live and callable."

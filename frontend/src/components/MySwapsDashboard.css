@@ -1,0 +1,156 @@
+/* ── MySwapsDashboard ────────────────────────────────────────────────────── */
+
+.msd {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+/* Header row */
+.msd__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+  gap: 0.75rem;
+}
+
+.msd__title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0;
+}
+
+.msd__refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1.5px solid #cbd5e0;
+  border-radius: 6px;
+  background: #fff;
+  color: #4a5568;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.msd__refresh-btn:hover:not(:disabled) {
+  border-color: #6c63ff;
+  color: #6c63ff;
+}
+
+.msd__refresh-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Spinner inside refresh button */
+.msd__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #cbd5e0;
+  border-top-color: #6c63ff;
+  border-radius: 50%;
+  animation: msd-spin 0.6s linear infinite;
+}
+
+@keyframes msd-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error banner */
+.msd__error {
+  padding: 0.65rem 0.9rem;
+  background: #fff0f0;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #b91c1c;
+  margin-bottom: 1rem;
+}
+
+/* Group (Active / History) */
+.msd__group {
+  margin-bottom: 1.5rem;
+}
+
+.msd__group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #718096;
+  margin: 0 0 0.75rem;
+}
+
+/* Count badge */
+.msd__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #6c63ff;
+  color: #fff;
+}
+
+.msd__badge--muted {
+  background: #e2e8f0;
+  color: #718096;
+}
+
+/* Swap list */
+.msd__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Loading skeletons */
+.msd__skeleton {
+  height: 72px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: msd-shimmer 1.4s infinite;
+}
+
+@keyframes msd-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Empty state */
+.msd__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2.5rem 1rem;
+  color: #a0aec0;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.msd__empty--disconnected {
+  color: #718096;
+}
+
+.msd__empty-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
