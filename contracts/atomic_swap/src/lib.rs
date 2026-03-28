@@ -74,7 +74,6 @@ pub struct Swap {
     pub seller: Address,
     pub usdc_amount: i128,
     pub usdc_token: Address,
-    pub zk_verifier: Address,
     pub created_at: u64,
     pub expires_at: u64,
     pub status: SwapStatus,
@@ -449,7 +448,13 @@ impl AtomicSwap {
         }
         swap.seller.require_auth();
 
-        let verified = ZkVerifierClient::new(&env, &swap.zk_verifier).verify_partial_proof(
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+
+        let verified = ZkVerifierClient::new(&env, &config.zk_verifier).verify_partial_proof(
             &swap.listing_id,
             &decryption_key,
             &proof_path,
@@ -850,7 +855,6 @@ mod test {
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn pending_swap(
         env: &Env,
         client: &AtomicSwapClient,
@@ -858,7 +862,7 @@ mod test {
         buyer: &Address,
         seller: &Address,
         usdc_id: &Address,
-        registry_id: &Address,
+        _registry_id: &Address,
         usdc_amount: i128,
         zk_id: &Address,
     ) -> u64 {
@@ -1719,7 +1723,6 @@ mod test {
         let seller = Address::generate(&env);
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 500);
-        let zk_id = env.register(ZkVerifier, ());
         let usdc_client = token::Client::new(&env, &usdc_id);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
@@ -1748,7 +1751,6 @@ mod test {
         let seller = Address::generate(&env);
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 500);
-        let zk_id = env.register(ZkVerifier, ());
         let usdc_client = token::Client::new(&env, &usdc_id);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
