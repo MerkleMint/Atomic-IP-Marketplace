@@ -731,6 +731,9 @@ impl AtomicSwap {
             .persistent()
             .remove(&DataKey::ActiveListingSwap(swap.listing_id));
         env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveListingSwap(swap.listing_id));
+        env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
