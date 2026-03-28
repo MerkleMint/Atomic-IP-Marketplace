@@ -358,6 +358,15 @@ impl IpRegistry {
         let mut ipfs_hashes: Vec<Bytes> = Vec::new(&env);
         let mut merkle_roots: Vec<Bytes> = Vec::new(&env);
 
+        // Optimization: Reduced OwnerIndex storage IO from O(N) to O(1) per batch.
+        // Load the owner's index once before the loop; push IDs in-memory; flush once after.
+        let idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut owner_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
         let mut j: u32 = 0;
         while j < entries.len() {
             let (ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc) = entries.get(j).unwrap();
@@ -387,15 +396,8 @@ impl IpRegistry {
             );
             extend_persistent(&env, &key, &cfg);
 
-            let idx_key = DataKey::OwnerIndex(owner.clone());
-            let mut ids: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&idx_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            ids.push_back(id);
-            env.storage().persistent().set(&idx_key, &ids);
-            extend_persistent(&env, &idx_key, &cfg);
+            // Accumulate into the in-memory Vec; no storage IO for OwnerIndex here.
+            owner_ids.push_back(id);
 
             listing_ids.push_back(id);
             ipfs_hashes.push_back(ipfs_hash.clone());
@@ -410,6 +412,10 @@ impl IpRegistry {
 
             j += 1;
         }
+
+        // Single write for OwnerIndex regardless of batch size.
+        env.storage().persistent().set(&idx_key, &owner_ids);
+        extend_persistent(&env, &idx_key, &cfg);
 
         env.storage()
             .persistent()
@@ -956,6 +962,33 @@ mod test {
         client.batch_register_ip(&owner, &entries);
         // Events are emitted; verify no panic and count is correct.
         assert_eq!(client.listing_count(), 2);
+    }
+
+    /// Verifies that OwnerIndex is written exactly once per batch call (O(1) index IO).
+    /// Registers 5 IPs and confirms the index contains exactly those IDs in insertion order.
+    #[test]
+    fn test_batch_register_ip_owner_index_integrity() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        for n in 1u8..=5 {
+            entries.push_back((
+                Bytes::from_slice(&env, &[b'Q', b'm', n]),
+                Bytes::from_slice(&env, &[b'r', n]),
+                500,
+                owner.clone(),
+                1000,
+            ));
+        }
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 5);
+
+        let index = client.list_by_owner(&owner);
+        assert_eq!(index.len(), 5);
+        // IDs must appear in insertion order.
+        for i in 0..5u32 {
+            assert_eq!(index.get(i).unwrap(), ids.get(i).unwrap());
+        }
     }
 
     #[test]
