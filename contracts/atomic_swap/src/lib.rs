@@ -45,6 +45,8 @@ pub enum ContractError {
     InvalidToken = 20,
     /// Fee basis points exceeds 10,000 (100%).
     FeeBpsTooHigh = 21,
+    /// Arithmetic overflow during fee calculation.
+    Overflow = 22,
 }
 
 #[contracttype]
@@ -191,7 +193,7 @@ impl AtomicSwap {
         }
         let product = usdc_amount
             .checked_mul(fee_bps as i128)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidAmount));
+            .unwrap_or_else(|| env.panic_with_error(ContractError::Overflow));
         let fee = product / 10_000;
         if fee == 0 {
             env.panic_with_error(ContractError::FeeWouldTruncate);
@@ -2697,5 +2699,34 @@ mod test {
             &zk_verifier,
             &ip_registry,
         );
+    }
+
+    // ── Issue #NNN: Overflow error code ──────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #22)")]
+    fn test_calculate_fee_amount_overflow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+
+        // Mint i128::MAX to buyer so the token balance check passes
+        let usdc_id = setup_usdc(&env, &buyer, i128::MAX);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+
+        // fee_bps = 1 so checked_mul(i128::MAX, 1) is fine; use fee_bps = 2
+        // to guarantee overflow: i128::MAX * 2 overflows i128
+        client.initialize(&admin, &2u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.add_allowed_token(&usdc_id);
+
+        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &i128::MAX);
     }
 }
