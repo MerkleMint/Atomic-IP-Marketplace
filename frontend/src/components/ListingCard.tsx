@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import "./ListingCard.css";
+import { CopyButton } from "./CopyButton";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
@@ -90,7 +91,10 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
   return (
     <article className="lc" aria-label={`Listing #${listing.id}`}>
       <div className="lc__header">
-        <span className="lc__id">Listing #{listing.id}</span>
+        <div className="lc__id flex items-center gap-2">
+          <span>Listing #{listing.id}</span>
+          <CopyButton text={listing.id.toString()} />
+        </div>
         {listing.price_usdc > 0 && (
           <span className="lc__price">
             {listing.price_usdc / 1_000_000} USDC
@@ -128,15 +132,19 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
       <div className="lc__meta">
         <span className="lc__label">IPFS Hash</span>
         {ipfsUrl ? (
-          <a
-            className="lc__hash"
-            href={ipfsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={listing.ipfs_hash}
-          >
-            {listing.ipfs_hash.slice(0, 20)}…
-          </a>
+          <div className="lc__hash-row">
+            <a
+              className="lc__hash"
+              href={ipfsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={listing.ipfs_hash}
+            >
+              {listing.ipfs_hash.slice(0, 20)}…
+            </a>
+
+            <CopyButton text={listing.ipfs_hash} />
+          </div>
         ) : (
           <span className="lc__hash lc__hash--empty">—</span>
         )}
