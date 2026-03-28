@@ -118,7 +118,8 @@ Run tests:
 ```
 
 ## Security
-[SECURITY.md](./SECURITY.md)
+
+Please report vulnerabilities privately — do not open public issues for security bugs. See [SECURITY.md](./SECURITY.md) for the full responsible disclosure policy.
 
 ## License
 This project is licensed under the Apache License 2.0. See the [LICENSE](./LICENSE) file for details.
