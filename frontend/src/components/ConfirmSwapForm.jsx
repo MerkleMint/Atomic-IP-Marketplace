@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { confirmSwap } from "../lib/contractClient";
 import "./ConfirmSwapForm.css";
 
+const USDC_DECIMALS = 7;
+
 /**
  * ConfirmSwapForm
  *
@@ -46,7 +48,7 @@ export function ConfirmSwapForm({ swap, wallet, onSuccess }) {
     <form className="confirm-swap-form" onSubmit={handleSubmit} noValidate>
       <div className="confirm-swap-form__meta">
         <span>Swap #{swap.id}</span>
-        <span>{swap.usdc_amount} USDC</span>
+        <span>{(swap.usdc_amount / Math.pow(10, USDC_DECIMALS)).toFixed(2)} USDC</span>
       </div>
 
       <label className="confirm-swap-form__label" htmlFor={`dk-${swap.id}`}>
