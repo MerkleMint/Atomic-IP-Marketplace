@@ -366,7 +366,6 @@ impl AtomicSwap {
                 seller: seller.clone(),
                 usdc_amount,
                 usdc_token,
-                zk_verifier: config.zk_verifier,
                 created_at: now,
                 expires_at,
                 status: SwapStatus::Pending,
@@ -866,7 +865,6 @@ mod test {
         Address,
         AtomicSwapClient<'a>,
         Address,
-        Address, // zk_id
     ) {
         let usdc_id = setup_usdc(env, buyer, usdc_amount);
         let (registry_id, listing_id) = setup_registry(env, seller, price_usdc);
@@ -875,7 +873,7 @@ mod test {
         let admin = Address::generate(env);
         let fee_recipient = Address::generate(env);
         let zk_id = env.register(ZkVerifier, ());
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
     }
@@ -889,7 +887,7 @@ mod test {
         usdc_id: &Address,
         _registry_id: &Address,
         usdc_amount: i128,
-        zk_id: &Address,
+        _zk_id: &Address,
     ) -> u64 {
         client.initiate_swap(
             &listing_id,
@@ -897,8 +895,6 @@ mod test {
             seller,
             usdc_id,
             &usdc_amount,
-            zk_id,
-            registry_id,
         )
     }
 
