@@ -145,6 +145,18 @@ pub struct OwnershipTransferred {
     pub to: Address,
 }
 
+#[contractevent]
+pub struct IpUpdated {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+    pub price_usdc: i128,
+    pub royalty_bps: u32,
+}
+
 /// Emitted when the contract is paused by the admin.
 #[contractevent]
 pub struct ContractPausedEvent {
@@ -480,8 +492,8 @@ impl IpRegistry {
         all_listings.slice(offset..end)
     }
 
-    /// Update ipfs_hash and/or merkle_root of an existing listing.
-    /// Requires owner auth. Rejects if a pending swap exists for the listing.
+    /// Update ipfs_hash, merkle_root, price_usdc, and/or royalty_bps of an existing listing.
+    /// Requires owner auth.
     pub fn update_listing(
         env: Env,
         owner: Address,
@@ -493,6 +505,9 @@ impl IpRegistry {
         assert_not_paused(&env);
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
             return Err(ContractError::InvalidInput);
+        }
+        if new_price_usdc <= 0 {
+            panic_with_error!(&env, ContractError::InvalidPrice);
         }
         owner.require_auth();
 
@@ -513,8 +528,10 @@ impl IpRegistry {
         }
 
         let cfg = get_config(&env);
-        listing.ipfs_hash = new_ipfs_hash;
-        listing.merkle_root = new_merkle_root;
+        listing.ipfs_hash = new_ipfs_hash.clone();
+        listing.merkle_root = new_merkle_root.clone();
+        listing.price_usdc = new_price_usdc;
+        listing.royalty_bps = new_royalty_bps;
         env.storage().persistent().set(&key, &listing);
         extend_persistent(&env, &key, &cfg);
         env.storage()
@@ -925,6 +942,73 @@ mod test {
         entries.push_back(IpEntry { ipfs_hash: Bytes::new(&env), merkle_root: Bytes::from_slice(&env, b"root2"), royalty_bps: 500, royalty_recipient: owner.clone(), price_usdc: 1000 });
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            0,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            -100,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_royalty_bps_above_10000() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_001,
+            owner.clone(),
+            1000,
+        ));
+        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_accepts_valid_price_and_royalty() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+            10_000,
+            owner.clone(),
+            1,
+        ));
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 1);
+        let listing = client.get_listing(&ids.get(0).unwrap()).unwrap();
+        assert_eq!(listing.price_usdc, 1);
+        assert_eq!(listing.royalty_bps, 10_000);
     }
 
     #[test]
