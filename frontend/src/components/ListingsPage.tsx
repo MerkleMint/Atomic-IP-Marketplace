@@ -2,13 +2,14 @@ import { useEffect, useState, useMemo } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { ShoppingCart, Loader2, Search, Filter } from "lucide-react";
 import { useDebounce } from "../lib/debounce";
+import { CopyButton } from "./CopyButton";
 
 interface Listing {
   id: number;
   ipfs_hash: string;
   owner: string;
   price: number;
-  status: 'available' | 'pending' | 'sold';
+  status: "available" | "pending" | "sold";
 }
 
 const mockListings: Listing[] = [
@@ -17,38 +18,37 @@ const mockListings: Listing[] = [
     ipfs_hash: "QmXyZ12345abcdefghijkLMNOPQRSTUVWXYZabcdef",
     owner: "GABCDEFGHJKLMNPQRSTUVXYZ23456789ABCDEFGHJK",
     price: 120,
-    status: 'available',
+    status: "available",
   },
   {
     id: 2,
     ipfs_hash: "QmZyX54321mnopqrstuVWXYZabcdef1234567890",
     owner: "GABCDE1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     price: 225,
-    status: 'pending',
+    status: "pending",
   },
   {
     id: 3,
     ipfs_hash: "QmLmnopQRStuvwxyZABCDEF1234567890ghijklmnop",
     owner: "G1234567890ABCDEFGHJKLMNPQRSTUVWXYZabcdef",
     price: 89,
-    status: 'sold',
+    status: "sold",
   },
   {
     id: 4,
     ipfs_hash: "QmNew45678newipfshashforlistingfour",
     owner: "GNEWOWNER1234567890ABCDEF",
     price: 150,
-    status: 'available',
+    status: "available",
   },
   {
     id: 5,
     ipfs_hash: "QmFive99999fivehashhere",
     owner: "GABCDE9999999999ABCDEF",
     price: 300,
-    status: 'available',
+    status: "available",
   },
 ];
-
 
 function truncateHash(hash: string): string {
   if (!hash) return "";
@@ -77,21 +77,25 @@ export function ListingsPage() {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  const initialSearch = searchParams.get('search') || '';
-  const initialStatus = searchParams.get('status') || 'all';
+  const initialSearch = searchParams.get("search") || "";
+  const initialStatus = searchParams.get("status") || "all";
   const [searchQuery, setSearchQuery] = useState(initialSearch);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'available' | 'pending' | 'sold'>(initialStatus as any);
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "available" | "pending" | "sold"
+  >(initialStatus as any);
   const debouncedSearch = useDebounce(searchQuery, 300);
 
   // Filtered listings
   const filteredListings = useMemo(() => {
     return allListings.filter((listing) => {
       const searchLower = debouncedSearch.toLowerCase();
-      const matchesSearch = debouncedSearch === '' || 
+      const matchesSearch =
+        debouncedSearch === "" ||
         listing.id.toString().includes(debouncedSearch) ||
         listing.owner.toLowerCase().includes(searchLower) ||
         listing.ipfs_hash.toLowerCase().includes(searchLower);
-      const matchesStatus = statusFilter === 'all' || listing.status === statusFilter;
+      const matchesStatus =
+        statusFilter === "all" || listing.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
   }, [allListings, debouncedSearch, statusFilter]);
@@ -99,8 +103,8 @@ export function ListingsPage() {
   // Update URL params when filters change
   useEffect(() => {
     const params = new URLSearchParams();
-    if (searchQuery) params.set('search', searchQuery);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (searchQuery) params.set("search", searchQuery);
+    if (statusFilter !== "all") params.set("status", statusFilter);
     setSearchParams(params, { replace: true });
   }, [debouncedSearch, statusFilter, searchQuery, setSearchParams]);
 
@@ -134,13 +138,14 @@ export function ListingsPage() {
     };
   }, []);
 
-
   const content = () => {
     if (filteredListings.length === 0) {
       return (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-700">
           <p>No listings match your filters.</p>
-          <p className="text-sm text-slate-500">Try adjusting your search or status filter.</p>
+          <p className="text-sm text-slate-500">
+            Try adjusting your search or status filter.
+          </p>
         </div>
       );
     }
@@ -157,22 +162,37 @@ export function ListingsPage() {
               className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md"
             >
               <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
-                <span>Listing #{listing.id}</span>
+                <div className="flex items-center gap-2">
+                  <span>Listing #{listing.id}</span>
+                  <CopyButton text={listing.id.toString()} />
+                </div>
                 <span>{listing.price} USDC</span>
               </div>
 
               <div className="mb-3">
                 <p className="text-xs text-slate-400">IPFS Hash</p>
-                <p className="truncate text-sm font-medium text-slate-800" title={listing.ipfs_hash}>
-                  {truncateHash(listing.ipfs_hash)}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p
+                    className="truncate text-sm font-medium text-slate-800"
+                    title={listing.ipfs_hash}
+                  >
+                    {truncateHash(listing.ipfs_hash)}
+                  </p>
+                  <CopyButton text={listing.ipfs_hash} />
+                </div>
               </div>
 
               <div className="mb-4">
                 <p className="text-xs text-slate-400">Owner</p>
-                <p className="truncate text-sm text-slate-700" title={listing.owner}>
-                  {truncateAddress(listing.owner)}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p
+                    className="truncate text-sm text-slate-700"
+                    title={listing.owner}
+                  >
+                    {truncateAddress(listing.owner)}
+                  </p>
+                  <CopyButton text={listing.owner} />
+                </div>
               </div>
 
               <button
@@ -188,7 +208,6 @@ export function ListingsPage() {
       </div>
     );
   };
-
 
   // Filters UI
   const filters = (
@@ -223,8 +242,12 @@ export function ListingsPage() {
     <section className="mx-auto max-w-7xl p-4">
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Marketplace Listings</h1>
-          <p className="text-sm text-slate-500">Browse all IP listings and select one to swap.</p>
+          <h1 className="text-2xl font-bold text-slate-900">
+            Marketplace Listings
+          </h1>
+          <p className="text-sm text-slate-500">
+            Browse all IP listings and select one to swap.
+          </p>
         </div>
         {loading && (
           <div className="inline-flex items-center gap-2 text-sm text-slate-500">
@@ -237,5 +260,4 @@ export function ListingsPage() {
       {content()}
     </section>
   );
-
 }
