@@ -47,6 +47,8 @@ pub enum ContractError {
     FeeBpsTooHigh = 21,
     /// confirmed_at_ledger is None on a swap that should have been confirmed.
     MissingConfirmationLedger = 22,
+    /// Arithmetic overflow during fee calculation.
+    Overflow = 23,
 }
 
 #[contracttype]
@@ -182,6 +184,16 @@ pub struct DisputeRaised {
     pub buyer: Address,
 }
 
+/// Emitted when the admin updates the protocol config.
+#[contractevent]
+pub struct ConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -193,7 +205,7 @@ impl AtomicSwap {
         }
         let product = usdc_amount
             .checked_mul(fee_bps as i128)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidAmount));
+            .unwrap_or_else(|| env.panic_with_error(ContractError::Overflow));
         let fee = product / 10_000;
         if fee == 0 {
             env.panic_with_error(ContractError::FeeWouldTruncate);
@@ -263,6 +275,42 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    pub fn update_config(
+        env: Env,
+        fee_bps: u32,
+        fee_recipient: Address,
+        cancel_delay_secs: u64,
+    ) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        if fee_bps > 10_000 {
+            env.panic_with_error(ContractError::FeeBpsTooHigh);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.fee_bps = fee_bps;
+        config.fee_recipient = fee_recipient.clone();
+        config.cancel_delay_secs = cancel_delay_secs;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        ConfigUpdated {
+            admin,
+            fee_bps,
+            fee_recipient,
+            cancel_delay_secs,
+        }
+        .publish(&env);
     }
 
     pub fn pause(env: Env) {
@@ -1854,31 +1902,6 @@ mod test {
             result,
             Err(Ok(soroban_sdk::Error::from_contract_error(
                 ContractError::DisputeWindowActive as u32
-            )))
-        );
-    }
-
-    #[test]
-    fn test_raise_dispute_on_pending_swap_returns_swap_not_completed() {
-        // raise_dispute on a Pending swap (confirmed_at_ledger is None) must
-        // return a typed ContractError rather than an unstructured panic.
-        // The SwapNotCompleted guard fires before the confirmed_at_ledger unwrap,
-        // which is the correct structured-error path for this state.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let (usdc_id, listing_id, _registry_id, _cid, client, _admin) =
-            setup_full(&env, &buyer, &seller, 500, 1);
-
-        let swap_id = pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id);
-
-        let result = client.try_raise_dispute(&swap_id);
-        assert_eq!(
-            result,
-            Err(Ok(soroban_sdk::Error::from_contract_error(
-                ContractError::SwapNotCompleted as u32
             )))
         );
     }

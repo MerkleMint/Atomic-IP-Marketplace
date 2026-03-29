@@ -5,6 +5,8 @@ import type { Swap } from "../hooks/useMySwaps";
 import "./SwapCard.css";
 import { CopyButton } from "./CopyButton";
 
+const USDC_DECIMALS = 7;
+
 interface Props {
   swap: Swap;
   ledgerTimestamp: number;
@@ -31,7 +33,7 @@ export function SwapCard({
         <span className="swap-card__status" data-status={swap.status}>
           {swap.status}
         </span>
-        <span className="swap-card__amount">{swap.usdc_amount} USDC</span>
+        <span className="swap-card__amount">{(swap.usdc_amount / Math.pow(10, USDC_DECIMALS)).toFixed(2)} USDC</span>
       </div>
       {isBuyer && (
         <CancelSwapButton
