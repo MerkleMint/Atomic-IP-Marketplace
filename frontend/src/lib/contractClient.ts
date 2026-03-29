@@ -26,7 +26,7 @@ const networkPassphrase = () =>
  */
 async function simulateView(
   functionName: string,
-  args: import("@stellar/stellar-sdk").xdr.ScVal[],
+  args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
@@ -68,7 +68,7 @@ async function simulateView(
  */
 function decodeSwapScVal(
   scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined,
-  swapId: number,
+  swapId: number
 ) {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
@@ -78,7 +78,7 @@ function decodeSwapScVal(
   // SwapStatus enum: scValToNative returns { tag: "Pending"|"Completed"|"Cancelled" }
   const status =
     typeof native.status === "object" && native.status !== null
-      ? (native.status.tag ?? "Unknown")
+      ? native.status.tag ?? "Unknown"
       : String(native.status ?? "Unknown");
 
   // decryption_key is Option<Bytes>: scValToNative returns null or Buffer
@@ -92,7 +92,9 @@ function decodeSwapScVal(
 
   const usdcAmount = Number(native.usdc_amount ?? 0);
   if (usdcAmount <= 0) {
-    console.warn(`[decodeSwapScVal] swap ${swapId} has non-positive usdc_amount: ${usdcAmount}`);
+    console.warn(
+      `[decodeSwapScVal] swap ${swapId} has non-positive usdc_amount: ${usdcAmount}`
+    );
   }
 
   return {
@@ -117,7 +119,7 @@ function decodeSwapScVal(
 export async function getSwapsByBuyer(buyerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(buyerAddress),
-    { type: "address" },
+    { type: "address" }
   );
 
   const retval = await simulateView("get_swaps_by_buyer", [addressScVal]);
@@ -162,7 +164,7 @@ export async function cancelSwap(
   wallet: {
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
-  },
+  }
 ) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
@@ -179,8 +181,8 @@ export async function cancelSwap(
     .addOperation(
       contract.call(
         "cancel_swap",
-        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
-      ),
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
+      )
     )
     .setTimeout(30)
     .build();
@@ -194,12 +196,16 @@ export async function cancelSwap(
  * Expected JSON format for each node:
  *   { "sibling": "0x..." or hex string (32 bytes), "is_left": true|false }
  */
-function encodeProofPath(proofPath: ProofNode[]): import("@stellar/stellar-sdk").xdr.ScVal {
+function encodeProofPath(
+  proofPath: ProofNode[]
+): import("@stellar/stellar-sdk").xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvVec(
     proofPath.map((node) => {
       const siblingBytes = Buffer.from(node.sibling.replace(/^0x/, ""), "hex");
       if (siblingBytes.length !== 32) {
-        throw new Error(`ProofNode sibling must be exactly 32 bytes (64 hex chars), got ${siblingBytes.length} bytes.`);
+        throw new Error(
+          `ProofNode sibling must be exactly 32 bytes (64 hex chars), got ${siblingBytes.length} bytes.`
+        );
       }
       return StellarSdk.xdr.ScVal.scvMap([
         new StellarSdk.xdr.ScMapEntry({
@@ -211,7 +217,7 @@ function encodeProofPath(proofPath: ProofNode[]): import("@stellar/stellar-sdk")
           val: StellarSdk.xdr.ScVal.scvBytes(siblingBytes),
         }),
       ]);
-    }),
+    })
   );
 }
 
@@ -239,7 +245,7 @@ export async function confirmSwap(
   wallet: {
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
-  },
+  }
 ) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
@@ -256,7 +262,7 @@ export async function confirmSwap(
   const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
 
   const keyBytes = StellarSdk.xdr.ScVal.scvBytes(
-    Buffer.from(decryptionKey.replace(/^0x/, ""), "hex"),
+    Buffer.from(decryptionKey.replace(/^0x/, ""), "hex")
   );
 
   const proofPathScVal = encodeProofPath(proofPath);
@@ -270,8 +276,8 @@ export async function confirmSwap(
         "confirm_swap",
         StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
         keyBytes,
-        proofPathScVal,
-      ),
+        proofPathScVal
+      )
     )
     .setTimeout(30)
     .build();
@@ -288,18 +294,18 @@ export async function approveUsdc(
   wallet: {
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
-  },
+  }
 ) {
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
   const contract = new StellarSdk.Contract(usdcContractId);
   const spenderAddressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(spenderId),
-    { type: "address" },
+    { type: "address" }
   );
   const fromAddressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(wallet.address),
-    { type: "address" },
+    { type: "address" }
   );
 
   // Expiration typically requires ledger seq, but since this is testnet/demo, we can just supply a large number or the expected expiration argument
@@ -313,8 +319,8 @@ export async function approveUsdc(
         fromAddressScVal,
         spenderAddressScVal,
         StellarSdk.nativeToScVal(amount, { type: "i128" }),
-        StellarSdk.nativeToScVal(0, { type: "u32" }), // expiration ledger
-      ),
+        StellarSdk.nativeToScVal(0, { type: "u32" }) // expiration ledger
+      )
     )
     .setTimeout(30)
     .build();
@@ -330,7 +336,7 @@ export async function initiateSwap(
   wallet: {
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
-  },
+  }
 ): Promise<number> {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
@@ -357,8 +363,8 @@ export async function initiateSwap(
         StellarSdk.nativeToScVal(new StellarSdk.Address(usdcContractId), {
           type: "address",
         }), // usdc_token
-        StellarSdk.nativeToScVal(usdcAmount, { type: "i128" }), // usdc_amount
-      ),
+        StellarSdk.nativeToScVal(usdcAmount, { type: "i128" }) // usdc_amount
+      )
     )
     .setTimeout(30)
     .build();
@@ -375,13 +381,13 @@ async function submitAndPoll(
     address: string;
     signTransaction: (xdr: string) => Promise<string>;
   },
-  server: import("@stellar/stellar-sdk").SorobanRpc.Server,
+  server: import("@stellar/stellar-sdk").SorobanRpc.Server
 ) {
   const preparedTx = await server.prepareTransaction(tx);
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
   const signedTx = StellarSdk.TransactionBuilder.fromXDR(
     signedXdr,
-    networkPassphrase(),
+    networkPassphrase()
   );
 
   const sendResult = await server.sendTransaction(signedTx);
@@ -408,7 +414,7 @@ async function submitAndPoll(
  */
 async function simulateIpRegistryView(
   functionName: string,
-  args: import("@stellar/stellar-sdk").xdr.ScVal[],
+  args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
   if (!IP_REGISTRY_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
@@ -442,7 +448,7 @@ async function simulateIpRegistryView(
  */
 function decodeListingScVal(
   scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined,
-  listingId: number,
+  listingId: number
 ) {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
@@ -474,7 +480,7 @@ function decodeListingScVal(
 export async function getListingsByOwner(ownerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(ownerAddress),
-    { type: "address" },
+    { type: "address" }
   );
 
   const retval = await simulateIpRegistryView("list_by_owner", [addressScVal]);
@@ -497,6 +503,28 @@ export async function getListing(listingId: number) {
 
   if (!retval) return null;
   return decodeListingScVal(retval, listingId);
+}
+
+/**
+ * Fetch the current number of listings stored in ip_registry.
+ * @returns {Promise<number>}
+ */
+export async function getListingCount() {
+  const retval = await simulateIpRegistryView("listing_count", []);
+  if (!retval) return 0;
+  return Number(StellarSdk.scValToNative(retval) ?? 0);
+}
+
+/**
+ * Return whether a listing currently has a pending swap in atomic_swap.
+ * @param {number} listingId
+ * @returns {Promise<boolean>}
+ */
+export async function hasPendingSwap(listingId: number) {
+  const retval = await simulateView("has_pending_swap", [
+    StellarSdk.nativeToScVal(listingId, { type: "u64" }),
+  ]);
+  return Boolean(StellarSdk.scValToNative(retval) ?? false);
 }
 
 /**
@@ -556,11 +584,15 @@ export async function registerIp(
     .addOperation(
       contract.call(
         "register_ip",
-        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), { type: "address" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }),
         StellarSdk.xdr.ScVal.scvBytes(ipfsBytes),
         StellarSdk.xdr.ScVal.scvBytes(merkleBytes),
         StellarSdk.nativeToScVal(royaltyBps, { type: "u32" }),
-        StellarSdk.nativeToScVal(new StellarSdk.Address(royaltyRecipient), { type: "address" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(royaltyRecipient), {
+          type: "address",
+        }),
         StellarSdk.nativeToScVal(priceRaw, { type: "i128" })
       )
     )
@@ -578,7 +610,7 @@ export async function registerIp(
 export async function getSwapsBySeller(sellerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(sellerAddress),
-    { type: "address" },
+    { type: "address" }
   );
 
   const retval = await simulateView("get_swaps_by_seller", [addressScVal]);
@@ -615,7 +647,9 @@ export async function getUsdcBalance(address: string): Promise<number> {
     .addOperation(
       contract.call(
         "balance",
-        StellarSdk.nativeToScVal(new StellarSdk.Address(address), { type: "address" })
+        StellarSdk.nativeToScVal(new StellarSdk.Address(address), {
+          type: "address",
+        })
       )
     )
     .setTimeout(30)
@@ -639,7 +673,8 @@ async function simulateZkView(
   functionName: string,
   args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
-  if (!ZK_VERIFIER_CONTRACT_ID) throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
+  if (!ZK_VERIFIER_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
@@ -669,9 +704,11 @@ export async function setMerkleRoot(
   rootHex: string,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ZK_VERIFIER_CONTRACT_ID) throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
+  if (!ZK_VERIFIER_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
   const rootBytes = Buffer.from(rootHex.replace(/^0x/, ""), "hex");
-  if (rootBytes.length !== 32) throw new Error("Root must be exactly 32 bytes (64 hex chars).");
+  if (rootBytes.length !== 32)
+    throw new Error("Root must be exactly 32 bytes (64 hex chars).");
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
@@ -684,7 +721,9 @@ export async function setMerkleRoot(
     .addOperation(
       contract.call(
         "set_merkle_root",
-        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), { type: "address" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }),
         StellarSdk.nativeToScVal(listingId, { type: "u64" }),
         StellarSdk.xdr.ScVal.scvBytes(rootBytes)
       )
@@ -693,6 +732,16 @@ export async function setMerkleRoot(
     .build();
 
   await submitAndPoll(tx, wallet, server);
+}
+
+export interface Listing {
+  id: number;
+  owner: string;
+  ipfs_hash: string;
+  merkle_root: string;
+  royalty_bps: number;
+  royalty_recipient: string;
+  price_usdc: number;
 }
 
 export interface ProofNode {
