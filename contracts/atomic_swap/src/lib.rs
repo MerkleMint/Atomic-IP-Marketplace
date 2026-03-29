@@ -2749,6 +2749,7 @@ mod test {
             &10_001u32,
             &fee_recipient,
             &3600u64,
+            &86_400u64,
             &zk_verifier,
             &ip_registry,
         );
