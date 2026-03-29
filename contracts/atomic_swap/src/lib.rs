@@ -213,6 +213,12 @@ impl AtomicSwap {
         fee
     }
 
+    fn validate_fee_amount(env: &Env, usdc_amount: i128, fee_bps: u32) {
+        // Intentionally compute the fee up front so initiate_swap preserves the
+        // truncation check even if the returned fee is not otherwise needed yet.
+        let _validated_fee = Self::calculate_fee_amount(env, usdc_amount, fee_bps);
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -379,8 +385,7 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
-        // Validate fee calculation; panics if fee would truncate to zero
-        let _fee = Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
+        Self::validate_fee_amount(&env, usdc_amount, config.fee_bps);
 
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(config.swap_expiry_secs);
