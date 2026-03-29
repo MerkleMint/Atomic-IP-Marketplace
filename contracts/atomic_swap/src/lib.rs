@@ -586,6 +586,7 @@ impl AtomicSwap {
         if swap.status != SwapStatus::Completed {
             env.panic_with_error(ContractError::SwapNotCompleted);
         }
+        swap.seller.require_auth();
 
         let confirmed_at = swap
             .confirmed_at_ledger
@@ -1906,6 +1907,57 @@ mod test {
                 ContractError::DisputeWindowActive as u32
             )))
         );
+    }
+
+    /// Issue #570: release_to_seller must require seller auth so a third party
+    /// cannot force settlement timing on behalf of the seller.
+    #[test]
+    fn test_release_to_seller_requires_seller_auth() {
+        let env = Env::default();
+        // Do NOT use mock_all_auths — we want real auth enforcement.
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let third_party = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let key_bytes = soroban_sdk::Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // Initialize with mock_all_auths for setup only.
+        env.mock_all_auths();
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        client.set_dispute_window(&10u32);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+
+        // Now clear mocked auths and attempt release as a third party — must fail.
+        env.set_auths(&[]);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &third_party,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "release_to_seller",
+                args: (swap_id,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_release_to_seller(&swap_id);
+        assert!(result.is_err(), "third party should not be able to call release_to_seller");
     }
 
     #[test]
