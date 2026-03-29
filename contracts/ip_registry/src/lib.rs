@@ -596,7 +596,9 @@ impl IpRegistry {
         if ids.is_empty() {
             env.storage().persistent().remove(&idx_key);
         } else {
+            let cfg = get_config(&env);
             env.storage().persistent().set(&idx_key, &ids);
+            extend_persistent(&env, &idx_key, &cfg);
         }
 
         IpDeregistered { listing_id, owner }.publish(&env);
@@ -1515,5 +1517,32 @@ mod test {
         let id = register(&client, &owner, b"QmHash", b"root", 1);
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.price_usdc, 1);
+    }
+
+    #[test]
+    fn test_deregister_listing_extends_ttl_near_expiry() {
+        // Advance to just before expiry, then call deregister.
+        // This must extend the TTL on the owner's index so remaining IDs persist.
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id1 = register(&client, &owner, b"QmNearExpiry1", b"root", 1);
+        let id2 = register(&client, &owner, b"QmNearExpiry2", b"root", 1);
+
+        // Verify index is properly populated
+        assert_eq!(client.list_by_owner(&owner).len(), 2);
+
+        // Advance to just inside the threshold window (expiry is EXTEND_TO ledgers away)
+        let near_expiry = EXTEND_TO - THRESHOLD + 1;
+        env.ledger().with_mut(|li| li.sequence_number += near_expiry);
+
+        // This operation should trigger extend_ttl on the idx_key DataKey::OwnerIndex
+        client.deregister_listing(&owner, &id1, &None);
+
+        // Advance another THRESHOLD ledgers. Without extension, OwnerIndex would be gone.
+        env.ledger().with_mut(|li| li.sequence_number += THRESHOLD);
+        
+        let ids = client.list_by_owner(&owner);
+        assert_eq!(ids.len(), 1, "Owner index failed to persist after deregistration extension window");
+        assert_eq!(ids.get(0).unwrap(), id2);
     }
 }
