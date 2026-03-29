@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import { registerIp } from "../lib/contractClient";
 import type { Wallet } from "../lib/walletKit";
 import "./RegisterListingForm.css";
-import { CopyButton } from "./CopyButton";
 
 interface Props {
   wallet: Wallet;
@@ -44,29 +43,46 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
   // Validate a single field
   const validateField = (field: keyof FormData, value: string): string | undefined => {
     switch (field) {
-      case "ipfsHash":
-        if (!value.trim()) return "IPFS hash is required.";
-        if (!/^[0-9a-fA-F]+$/.test(value.replace(/^0x/, ""))) return "IPFS hash must be a valid hex string.";
+      case "ipfsHash": {
+        const hash = value.trim();
+        if (!hash) return "IPFS hash is required.";
+        
+        // CID-aware check: accept strings starting with Qm (CIDv0), bafy (CIDv1), or a valid hex string
+        const isCidV0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44,}$/.test(hash);
+        const isCidV1 = /^bafy[a-zA-Z0-9]{55,}$/.test(hash);
+        const isHex = /^[0-9a-fA-F]+$/.test(hash.replace(/^0x/, ""));
+        const isMinLength = hash.length >= 10;
+
+        if (!isCidV0 && !isCidV1 && !isHex && !isMinLength) {
+          return "IPFS hash must be a valid CID (Qm... or bafy...) or hex string.";
+        }
         return undefined;
-      case "merkleRoot":
-        if (!value.trim()) return "Merkle root is required.";
-        if (!/^[0-9a-fA-F]{64}$/.test(value.replace(/^0x/, "")))
+      }
+      case "merkleRoot": {
+        const root = value.trim();
+        if (!root) return "Merkle root is required.";
+        if (!/^[0-9a-fA-F]{64}$/.test(root.replace(/^0x/, "")))
           return "Merkle root must be a 64-character hex string (32 bytes).";
         return undefined;
-      case "priceUsdc":
+      }
+      case "priceUsdc": {
         const price = parseFloat(value);
         if (!value.trim()) return "Price is required.";
         if (isNaN(price) || price <= 0) return "Price must be greater than 0.";
         return undefined;
-      case "royaltyBps":
+      }
+      case "royaltyBps": {
         const royalty = parseInt(value, 10);
         if (!value.trim()) return "Royalty BPS is required.";
         if (isNaN(royalty) || royalty < 0 || royalty > 10000) return "Royalty must be between 0 and 10000 basis points.";
         return undefined;
-      case "royaltyRecipient":
-        if (!value.trim()) return "Royalty recipient address is required.";
-        if (!/^G[A-Z0-9]{55}$/.test(value)) return "Must be a valid Stellar address (G...)";
+      }
+      case "royaltyRecipient": {
+        const recipient = value.trim();
+        if (!recipient) return "Royalty recipient address is required.";
+        if (!/^G[A-Z0-9]{55}$/.test(recipient)) return "Must be a valid Stellar address (G...)";
         return undefined;
+      }
       default:
         return undefined;
     }
@@ -158,7 +174,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
 
           <div className="rlf__field">
             <label className="rlf__label" htmlFor="ipfs-hash">
-              IPFS Hash <span className="rlf__required">*</span>
+              IPFS Hash / CID <span className="rlf__required">*</span>
             </label>
             <input
               id="ipfs-hash"
@@ -167,11 +183,12 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               value={formData.ipfsHash}
               onChange={handleChange("ipfsHash")}
               onBlur={handleBlur("ipfsHash")}
-              placeholder="e.g. Qm... or 0x..."
+              placeholder="e.g. Qm... or bafy... or 0x..."
               spellCheck={false}
               aria-describedby={errors.ipfsHash ? "ipfs-hash-error" : undefined}
             />
             {errors.ipfsHash && <p id="ipfs-hash-error" className="rlf__error" role="alert">{errors.ipfsHash}</p>}
+            <p className="rlf__hint">Accepts Qm... (v0), bafy... (v1), or hex.</p>
           </div>
 
           <div className="rlf__field">
@@ -185,7 +202,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               value={formData.merkleRoot}
               onChange={handleChange("merkleRoot")}
               onBlur={handleBlur("merkleRoot")}
-              placeholder="e.g. 0xa3f1...c9d2 (64 hex chars)"
+              placeholder="e.g. 0xa3f1... (64 hex chars)"
               maxLength={66}
               spellCheck={false}
               aria-describedby={
