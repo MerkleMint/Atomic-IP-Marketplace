@@ -102,6 +102,12 @@ pub enum DataKey {
     AllowedToken(Address),
 }
 
+/// Event lifecycle:
+///   1. SwapInitiated      — buyer locks funds and initiates the swap
+///   2. SwapKeySubmitted   — seller submits the decryption key; dispute window begins
+///   3. FundsReleased      — dispute window elapsed, funds transferred to seller (swap settled)
+///      SwapCancelled      — buyer cancels before seller confirms (funds returned)
+
 #[contractevent]
 pub struct SwapInitiated {
     #[topic]
@@ -129,9 +135,11 @@ pub struct SwapCancelled {
     pub usdc_amount: i128,
 }
 
-/// Emitted when a swap is completed and funds are released to the seller.
+/// Emitted by confirm_swap when the seller submits the decryption key.
+/// The dispute window starts here; funds are NOT yet released.
+/// Listen for FundsReleased to confirm settlement.
 #[contractevent]
-pub struct SwapCompleted {
+pub struct SwapKeySubmitted {
     #[topic]
     pub swap_id: u64,
     pub seller: Address,
@@ -561,7 +569,7 @@ impl AtomicSwap {
         }
         .publish(&env);
 
-        SwapCompleted {
+        SwapKeySubmitted {
             swap_id,
             seller: swap.seller,
         }
@@ -2332,16 +2340,16 @@ mod test {
 
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
 
-        // SwapCompleted: topics = ["swap_completed", swap_id]; data = map { seller: address }
+        // SwapKeySubmitted: topics = ["swap_key_submitted", swap_id]; data = map { seller: address }
         let swap_id_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &<u64 as IntoVal<Env, soroban_sdk::Val>>::into_val(&swap_id, &env)).unwrap();
-        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("swap_completed".try_into().unwrap());
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("swap_key_submitted".try_into().unwrap());
         let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
             let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
             body.topics.len() == 2
                 && body.topics[0] == name_xdr
                 && body.topics[1] == swap_id_xdr
         });
-        assert!(found, "SwapCompleted event not emitted on confirm_swap");
+        assert!(found, "SwapKeySubmitted event not emitted on confirm_swap");
     }
 
     #[test]
