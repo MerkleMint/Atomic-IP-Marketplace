@@ -369,10 +369,15 @@ export async function initiateSwap(
     .setTimeout(30)
     .build();
 
-  await submitAndPoll(tx, wallet, server);
+  const txResponse = await submitAndPoll(tx, wallet, server);
 
-  // NOTE: For demo purposes, we return a mocked ID. In a real integration, the new swap ID would need to be extracted from the tx events or queried.
-  return Math.floor(Math.random() * 1000) + 1;
+  if (!txResponse.returnValue) {
+    throw new Error("Transaction succeeded but returned no value (swap ID expected).");
+  }
+
+  // Contract returns u64 swap ID. scValToNative returns BigInt for u64.
+  const swapId = StellarSdk.scValToNative(txResponse.returnValue);
+  return Number(swapId);
 }
 
 async function submitAndPoll(
@@ -382,7 +387,7 @@ async function submitAndPoll(
     signTransaction: (xdr: string) => Promise<string>;
   },
   server: import("@stellar/stellar-sdk").SorobanRpc.Server
-) {
+): Promise<StellarSdk.SorobanRpc.Api.GetSuccessfulTransactionResponse> {
   const preparedTx = await server.prepareTransaction(tx);
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
   const signedTx = StellarSdk.TransactionBuilder.fromXDR(
@@ -405,6 +410,8 @@ async function submitAndPoll(
   if (txResponse.status !== "SUCCESS") {
     throw new Error(`Transaction did not succeed: ${txResponse.status}`);
   }
+
+  return txResponse as StellarSdk.SorobanRpc.Api.GetSuccessfulTransactionResponse;
 }
 
 // ─── IP Registry ──────────────────────────────────────────────────────────────
