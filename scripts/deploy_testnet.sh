@@ -65,7 +65,8 @@ if ! stellar contract invoke \
   --admin "$ATOMIC_SWAP_ADMIN" \
   --fee_bps "$ATOMIC_SWAP_FEE_BPS" \
   --fee_recipient "$ATOMIC_SWAP_FEE_RECIPIENT" \
-  --cancel_delay_secs "$ATOMIC_SWAP_CANCEL_DELAY_SECS"; then
+  --cancel_delay_secs "$ATOMIC_SWAP_CANCEL_DELAY_SECS" \
+  --zk_verifier "$ZK_VERIFIER"; then
   echo "Failed to initialize atomic swap contract: $ATOMIC_SWAP" >&2
   exit 1
 fi
