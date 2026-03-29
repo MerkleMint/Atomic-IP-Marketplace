@@ -848,10 +848,14 @@ impl AtomicSwap {
     }
 
     pub fn get_swaps_by_buyer(env: Env, buyer: Address) -> soroban_sdk::Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::BuyerIndex(buyer))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+        let key = DataKey::BuyerIndex(buyer);
+        let ids: Option<soroban_sdk::Vec<u64>> = env.storage().persistent().get(&key);
+        if ids.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        ids.unwrap_or_else(|| soroban_sdk::Vec::new(&env))
     }
 
     /// Paginated variant of `get_swaps_by_buyer`.
@@ -888,10 +892,14 @@ impl AtomicSwap {
     }
 
     pub fn get_swaps_by_seller(env: Env, seller: Address) -> soroban_sdk::Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::SellerIndex(seller))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+        let key = DataKey::SellerIndex(seller);
+        let ids: Option<soroban_sdk::Vec<u64>> = env.storage().persistent().get(&key);
+        if ids.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        ids.unwrap_or_else(|| soroban_sdk::Vec::new(&env))
     }
 
     pub fn is_listing_available(env: Env, listing_id: u64) -> bool {
@@ -2752,5 +2760,71 @@ mod test {
             &zk_verifier,
             &ip_registry,
         );
+    }
+
+    // ── TTL extension on index reads (Issue fix) ──────────────────────────────
+
+    #[test]
+    fn test_get_swaps_by_buyer_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
+
+        // Simulate ledger advancing close to TTL expiry by bumping sequence/timestamp.
+        env.ledger().with_mut(|li| {
+            li.sequence_number += PERSISTENT_TTL_LEDGERS - 100;
+        });
+
+        // Reading the index should extend TTL — the entry must still be present.
+        let ids = client.get_swaps_by_buyer(&buyer);
+        assert_eq!(ids.len(), 1, "BuyerIndex should still exist after TTL-near read");
+
+        // Confirm the key is still live in storage after the read.
+        env.as_contract(&contract_id, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .has(&DataKey::BuyerIndex(buyer.clone())),
+                "BuyerIndex TTL should have been extended by get_swaps_by_buyer"
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_swaps_by_seller_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
+
+        // Simulate ledger advancing close to TTL expiry.
+        env.ledger().with_mut(|li| {
+            li.sequence_number += PERSISTENT_TTL_LEDGERS - 100;
+        });
+
+        // Reading the index should extend TTL — the entry must still be present.
+        let ids = client.get_swaps_by_seller(&seller);
+        assert_eq!(ids.len(), 1, "SellerIndex should still exist after TTL-near read");
+
+        // Confirm the key is still live in storage after the read.
+        env.as_contract(&contract_id, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .has(&DataKey::SellerIndex(seller.clone())),
+                "SellerIndex TTL should have been extended by get_swaps_by_seller"
+            );
+        });
     }
 }
