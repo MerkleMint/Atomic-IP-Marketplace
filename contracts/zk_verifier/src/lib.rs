@@ -56,6 +56,14 @@ pub struct ProofVerified {
     pub result: bool,
 }
 
+#[contractevent]
+pub struct RootOwnershipTransferred {
+    #[topic]
+    pub listing_id: u64,
+    pub from: Address,
+    pub to: Address,
+}
+
 /// Client interface for ZkVerifier — always compiled so dependents can use ZkVerifierClient.
 #[cfg(not(feature = "contract"))]
 #[contractclient(name = "ZkVerifierClient")]
@@ -118,9 +126,14 @@ impl ZkVerifier {
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MerkleRoot(listing_id))
+        let key = DataKey::MerkleRoot(listing_id);
+        let result = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        result
     }
 
     /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
@@ -158,6 +171,10 @@ impl ZkVerifier {
             Some(r) => r,
             None => return false,
         };
+
+        if path.len() > MAX_PROOF_DEPTH as usize {
+            soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
+        }
 
         if path.len() > MAX_PROOF_DEPTH as usize {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
@@ -212,6 +229,12 @@ impl ZkVerifier {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+        RootOwnershipTransferred {
+            listing_id,
+            from: current_owner,
+            to: new_owner,
+        }
+        .publish(&env);
     }
 }
 
@@ -290,6 +313,32 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
         assert_eq!(client.get_merkle_root(&42u64), Some(root));
+    }
+
+    #[test]
+    fn test_get_merkle_root_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"ttl_test_leaf");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        client.set_merkle_root(&owner, &99u64, &root);
+
+        // Advance ledger close to TTL expiry
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // Read the root — must extend TTL
+        assert_eq!(client.get_merkle_root(&99u64), Some(root.clone()));
+
+        // Advance again; root should still be alive (TTL was re-extended)
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        assert_eq!(client.get_merkle_root(&99u64), Some(root));
     }
 
     #[test]
@@ -403,8 +452,7 @@ mod test {
         let root: BytesN<32> = env.crypto().sha256(&leaf).into();
         client.set_merkle_root(&owner, &8u64, &root);
 
-        let non_zero_hash: BytesN<32> =
-            BytesN::from_array(&env, &[1u8; 32]);
+        let non_zero_hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
         let mut path: Vec<ProofNode> = Vec::new(&env);
         for _ in 0..(MAX_PROOF_DEPTH + 1) {
             path.push_back(ProofNode {
@@ -438,6 +486,41 @@ mod test {
         let new_root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"new")).into();
         client.set_merkle_root(&new_owner, &1u64, &new_root);
         assert_eq!(client.get_merkle_root(&1u64), Some(new_root));
+    }
+
+    #[test]
+    fn test_transfer_root_ownership_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"leaf"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        client.transfer_root_ownership(&owner, &1u64, &new_owner);
+
+        let events = env.events().all().events();
+        let transfer_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                if let soroban_sdk::xdr::ContractEvent {
+                    type_: soroban_sdk::xdr::ContractEventType::Contract,
+                    body: soroban_sdk::xdr::ContractEventBody::V0(v0),
+                } = e
+                {
+                    v0.topics.len() > 0
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert!(!transfer_events.is_empty(), "RootOwnershipTransferred event not emitted");
     }
 
     #[test]
