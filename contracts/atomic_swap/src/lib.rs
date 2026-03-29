@@ -721,8 +721,16 @@ impl AtomicSwap {
                 .get_listing(&swap.listing_id)
                 .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
 
-            // Deduct protocol fee
-            let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
+            // Deduct protocol fee. For very small amounts where the fee would
+            // truncate to zero, skip the fee entirely rather than panicking and
+            // permanently blocking dispute resolution.
+            let fee = {
+                let product = swap.usdc_amount.checked_mul(config.fee_bps as i128);
+                match product {
+                    Some(p) if p / 10_000 > 0 => p / 10_000,
+                    _ => 0,
+                }
+            };
             let mut seller_amount = swap.usdc_amount - fee;
             if fee > 0 {
                 token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
@@ -2014,6 +2022,53 @@ mod test {
             Some(SwapStatus::ResolvedSeller)
         );
         assert_eq!(usdc_client.balance(&seller), 500);
+    }
+
+    /// Issue #571: resolve_dispute must not panic with FeeWouldTruncate for small amounts.
+    /// When fee_bps > 0 but usdc_amount is too small for the fee to be non-zero,
+    /// the full amount should go to the seller instead of the dispute being stuck.
+    #[test]
+    fn test_resolve_dispute_small_amount_does_not_panic() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        // usdc_amount = 1, fee_bps = 250 → fee = 1*250/10_000 = 0 (would truncate)
+        let usdc_id = setup_usdc(&env, &buyer, 1);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &250u32,
+            &fee_recipient,
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        client.raise_dispute(&swap_id);
+
+        // Must succeed — full amount goes to seller since fee truncates to zero.
+        client.resolve_dispute(&swap_id, &false);
+
+        let usdc = token::Client::new(&env, &usdc_id);
+        assert_eq!(usdc.balance(&seller), 1);
+        assert_eq!(usdc.balance(&fee_recipient), 0);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
     }
 
     #[test]
