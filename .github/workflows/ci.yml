@@ -97,8 +97,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set up environment variables for build
+        run: cp .env.example .env
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Build
         run: npm run build
+
+      - name: Verify no undefined contract addresses in bundle
+        run: |
+          set -e
+          BUNDLE_DIR=dist/assets
+          if ! ls "$BUNDLE_DIR"/*.js 1>/dev/null 2>&1; then
+            echo "ERROR: No JS bundle files found in $BUNDLE_DIR"
+            exit 1
+          fi
+          if grep -r '"undefined"' "$BUNDLE_DIR"/*.js | grep -iE '(contract|registry|swap|verifier|stellar)'; then
+            echo "ERROR: Bundle contains undefined contract address(es). Check VITE_CONTRACT_* env vars."
+            exit 1
+          fi
+          echo "OK: No undefined contract addresses detected in bundle."
