@@ -506,6 +506,28 @@ export async function getListing(listingId: number) {
 }
 
 /**
+ * Fetch the current number of listings stored in ip_registry.
+ * @returns {Promise<number>}
+ */
+export async function getListingCount() {
+  const retval = await simulateIpRegistryView("listing_count", []);
+  if (!retval) return 0;
+  return Number(StellarSdk.scValToNative(retval) ?? 0);
+}
+
+/**
+ * Return whether a listing currently has a pending swap in atomic_swap.
+ * @param {number} listingId
+ * @returns {Promise<boolean>}
+ */
+export async function hasPendingSwap(listingId: number) {
+  const retval = await simulateView("has_pending_swap", [
+    StellarSdk.nativeToScVal(listingId, { type: "u64" }),
+  ]);
+  return Boolean(StellarSdk.scValToNative(retval) ?? false);
+}
+
+/**
  * Register a new IP listing on the ip_registry contract.
  * Calls register_ip(owner, ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc)
  *

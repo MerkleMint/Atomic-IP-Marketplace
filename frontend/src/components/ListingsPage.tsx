@@ -3,6 +3,11 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { ShoppingCart, Loader2, Search, Filter } from "lucide-react";
 import { useDebounce } from "../lib/debounce";
 import { CopyButton } from "./CopyButton";
+import {
+  getListing,
+  getListingCount,
+  hasPendingSwap,
+} from "../lib/contractClient";
 
 interface Listing {
   id: number;
@@ -11,44 +16,6 @@ interface Listing {
   price: number;
   status: "available" | "pending" | "sold";
 }
-
-const mockListings: Listing[] = [
-  {
-    id: 1,
-    ipfs_hash: "QmXyZ12345abcdefghijkLMNOPQRSTUVWXYZabcdef",
-    owner: "GABCDEFGHJKLMNPQRSTUVXYZ23456789ABCDEFGHJK",
-    price: 120,
-    status: "available",
-  },
-  {
-    id: 2,
-    ipfs_hash: "QmZyX54321mnopqrstuVWXYZabcdef1234567890",
-    owner: "GABCDE1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    price: 225,
-    status: "pending",
-  },
-  {
-    id: 3,
-    ipfs_hash: "QmLmnopQRStuvwxyZABCDEF1234567890ghijklmnop",
-    owner: "G1234567890ABCDEFGHJKLMNPQRSTUVWXYZabcdef",
-    price: 89,
-    status: "sold",
-  },
-  {
-    id: 4,
-    ipfs_hash: "QmNew45678newipfshashforlistingfour",
-    owner: "GNEWOWNER1234567890ABCDEF",
-    price: 150,
-    status: "available",
-  },
-  {
-    id: 5,
-    ipfs_hash: "QmFive99999fivehashhere",
-    owner: "GABCDE9999999999ABCDEF",
-    price: 300,
-    status: "available",
-  },
-];
 
 function truncateHash(hash: string): string {
   if (!hash) return "";
@@ -63,11 +30,40 @@ function truncateAddress(address: string): string {
 }
 
 async function fetchListings(): Promise<Listing[]> {
-  // TODO: replace with real indexer API call once available
-  // e.g. const res = await fetch("/api/listings");
-  // return await res.json();
-  await new Promise((resolve) => setTimeout(resolve, 750));
-  return mockListings;
+  const count = await getListingCount();
+
+  if (count === 0) {
+    return [];
+  }
+
+  const listingIds = Array.from({ length: count }, (_, index) => index + 1);
+  const settledListings = await Promise.allSettled(
+    listingIds.map(async (listingId) => {
+      const listing = await getListing(listingId);
+      if (!listing) {
+        return null;
+      }
+
+      const pending = await hasPendingSwap(listingId);
+      return {
+        id: listing.id,
+        ipfs_hash: listing.ipfs_hash,
+        owner: listing.owner,
+        price: listing.price_usdc / 1e7,
+        status: pending ? "pending" : "available",
+      } satisfies Listing;
+    })
+  );
+
+  return settledListings
+    .filter(
+      (
+        result
+      ): result is PromiseFulfilledResult<Listing | null> =>
+        result.status === "fulfilled"
+    )
+    .map((result) => result.value)
+    .filter((listing): listing is Listing => listing !== null);
 }
 
 export function ListingsPage() {
