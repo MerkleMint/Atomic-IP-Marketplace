@@ -11,6 +11,7 @@ pub enum ContractError {
     RootNotFound = 2,
     ProofTooLong = 3,
     InvalidInput = 4,
+    InvalidRoot = 5,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -90,6 +91,9 @@ impl ZkVerifier {
         root: BytesN<32>,
     ) -> Result<(), ContractError> {
         owner.require_auth();
+        if root == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ContractError::InvalidRoot);
+        }
         let owner_key = DataKey::Owner(listing_id);
         if let Some(existing_owner) = env
             .storage()
