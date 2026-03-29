@@ -601,20 +601,17 @@ impl AtomicSwap {
             token_client.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
             swap.status = SwapStatus::ResolvedBuyer;
         } else {
-            if let Some(config) = env
+            let config: Config = env
                 .storage()
                 .instance()
-                .get::<DataKey, Config>(&DataKey::Config)
-            {
-                let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
-                let seller_amount = swap.usdc_amount - fee;
-                if fee > 0 {
-                    token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
-                }
-                token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
-            } else {
-                token_client.transfer(&contract_addr, &swap.seller, &swap.usdc_amount);
+                .get(&DataKey::Config)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+            let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
+            let seller_amount = swap.usdc_amount - fee;
+            if fee > 0 {
+                token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
             }
+            token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
             swap.status = SwapStatus::ResolvedSeller;
         }
 
@@ -1778,6 +1775,34 @@ mod test {
             Some(SwapStatus::ResolvedSeller)
         );
         assert_eq!(usdc_client.balance(&seller), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_resolve_dispute_panics_when_config_missing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let swap_id = confirmed_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id,
+            &zk_id, &proof_path, &key_bytes,
+        );
+        client.raise_dispute(&swap_id);
+
+        // Remove Config from instance storage to trigger the NotInitialized panic
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Config);
+        });
+
+        client.resolve_dispute(&swap_id, &false);
     }
 
     #[test]
