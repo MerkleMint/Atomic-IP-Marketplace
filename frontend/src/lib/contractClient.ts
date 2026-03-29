@@ -624,7 +624,8 @@ export async function getSwapsBySeller(sellerAddress: string) {
 // ─── USDC Balance ─────────────────────────────────────────────────────────────
 
 const USDC_CONTRACT_ID = CONTRACT_USDC;
-const USDC_DECIMALS = 7;
+// Stellar USDC uses 7 decimal places (10_000_000 stroops = 1 USDC)
+export const USDC_DECIMALS = 7;
 
 /**
  * Fetch the USDC balance for a given address by calling `balance(address)`
