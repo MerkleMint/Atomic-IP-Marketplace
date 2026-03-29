@@ -19,6 +19,8 @@ fi
 : "${ATOMIC_SWAP_FEE_BPS:=0}"
 : "${ATOMIC_SWAP_FEE_RECIPIENT:?ATOMIC_SWAP_FEE_RECIPIENT must be set in .env}"
 : "${ATOMIC_SWAP_CANCEL_DELAY_SECS:=3600}"
+: "${IP_REGISTRY_TTL_THRESHOLD:=100000}"
+: "${IP_REGISTRY_TTL_EXTEND_TO:=200000}"
 
 echo "Deploying to testnet..."
 
@@ -38,6 +40,20 @@ deploy_contract() {
 IP_REGISTRY=$(deploy_contract target/wasm32-unknown-unknown/release/ip_registry.wasm)
 ATOMIC_SWAP=$(deploy_contract target/wasm32-unknown-unknown/release/atomic_swap.wasm)
 ZK_VERIFIER=$(deploy_contract target/wasm32-unknown-unknown/release/zk_verifier.wasm)
+
+echo "Initializing ip_registry contract..."
+if ! stellar contract invoke \
+  --id "$IP_REGISTRY" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- \
+  initialize \
+  --admin "$ATOMIC_SWAP_ADMIN" \
+  --ttl_threshold "$IP_REGISTRY_TTL_THRESHOLD" \
+  --ttl_extend_to "$IP_REGISTRY_TTL_EXTEND_TO"; then
+  echo "Failed to initialize ip_registry contract: $IP_REGISTRY" >&2
+  exit 1
+fi
 
 echo "Initializing atomic swap contract..."
 if ! stellar contract invoke \
