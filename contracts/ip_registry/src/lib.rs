@@ -513,6 +513,8 @@ impl IpRegistry {
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
+        new_price_usdc: i128,
+        new_royalty_bps: u32,
         atomic_swap: Address,
     ) -> Result<(), ContractError> {
         assert_not_paused(&env);
@@ -1311,6 +1313,8 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"QmHashNew"),
             &Bytes::from_slice(&env, b"rootNew"),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
     }
@@ -1321,12 +1325,14 @@ mod test {
         let owner = Address::generate(&env);
         let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
-        
+
         let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -1338,12 +1344,14 @@ mod test {
         let owner = Address::generate(&env);
         let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
-        
+
         let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::new(&env),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -1351,19 +1359,40 @@ mod test {
 
     #[test]
     fn test_update_listing_rejects_pending_swap() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
-        
-        env.mock_all_auths();
-        
+
+        // Register a real AtomicSwap contract and seed a Pending swap for this listing.
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+            };
+            env.storage().persistent().set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage().persistent().set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
         let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::from_slice(&env, b"newRoot"),
-            &atomic_swap,
+            &2000i128,
+            &0u32,
+            &swap_contract_id,
         );
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
     }
