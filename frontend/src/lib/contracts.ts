@@ -1,23 +1,36 @@
 /**
- * Configuration module for contract addresses.
- * Reads from environment variables (Vite-style) and validates their presence.
+ * Contract addresses and network settings loaded from .env via Vite.
+ * This module exports these values as typed constants and performs
+ * a validation check to ensure the application does not run with
+ * missing configuration.
+ *
+ * Each VITE_* variable should match your deployment settings for
+ * the Stellar network.
  */
 
-const getEnvVar = (name: string): string => {
-  const value = (import.meta.env as any)[name];
-  if (!value) {
-    throw new Error(`Environment variable ${name} is missing. Please check your .env file.`);
-  }
-  return value;
+export const CONTRACT_ATOMIC_SWAP: string = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP;
+export const CONTRACT_IP_REGISTRY: string = import.meta.env.VITE_CONTRACT_IP_REGISTRY;
+export const CONTRACT_ZK_VERIFIER: string = import.meta.env.VITE_CONTRACT_ZK_VERIFIER;
+export const CONTRACT_USDC: string = import.meta.env.VITE_CONTRACT_USDC;
+export const STELLAR_NETWORK: string = import.meta.env.VITE_STELLAR_NETWORK;
+export const STELLAR_RPC_URL: string = import.meta.env.VITE_STELLAR_RPC_URL;
+
+const required = {
+  VITE_CONTRACT_ATOMIC_SWAP: CONTRACT_ATOMIC_SWAP,
+  VITE_CONTRACT_IP_REGISTRY: CONTRACT_IP_REGISTRY,
+  VITE_CONTRACT_ZK_VERIFIER: CONTRACT_ZK_VERIFIER,
+  VITE_CONTRACT_USDC: CONTRACT_USDC,
+  VITE_STELLAR_NETWORK: STELLAR_NETWORK,
+  VITE_STELLAR_RPC_URL: STELLAR_RPC_URL,
 };
 
-export const CONTRACT_IP_REGISTRY = getEnvVar("VITE_CONTRACT_IP_REGISTRY");
-export const CONTRACT_ATOMIC_SWAP = getEnvVar("VITE_CONTRACT_ATOMIC_SWAP");
-export const CONTRACT_ZK_VERIFIER = getEnvVar("VITE_CONTRACT_ZK_VERIFIER");
-
-// Optional
-export const CONTRACT_USDC = import.meta.env.VITE_CONTRACT_USDC || "";
-
-export const STELLAR_NETWORK = import.meta.env.VITE_STELLAR_NETWORK || "testnet";
-export const STELLAR_RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-export const IPFS_GATEWAY = import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
+// Perform module-load validation
+Object.entries(required).forEach(([key, value]) => {
+  if (!value || value.trim() === "") {
+    throw new Error(
+      `Frontend configuration error: ${key} is missing in .env file. ` +
+        `Ensure all six VITE_* contract and network variables are set. ` +
+        `Check .env.example for guidance.`
+    );
+  }
+});

@@ -100,6 +100,9 @@ jobs:
       - name: Set up environment variables for build
         run: cp .env.example .env
 
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
 
