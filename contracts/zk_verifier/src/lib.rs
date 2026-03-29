@@ -176,6 +176,10 @@ impl ZkVerifier {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
+        if path.len() > MAX_PROOF_DEPTH as usize {
+            soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
+        }
+
         let zero_sibling = BytesN::from_array(&env, &[0u8; 32]);
         let mut current: BytesN<32> = env.crypto().sha256(&leaf).into();
         for node in path.iter() {
@@ -448,8 +452,7 @@ mod test {
         let root: BytesN<32> = env.crypto().sha256(&leaf).into();
         client.set_merkle_root(&owner, &8u64, &root);
 
-        let non_zero_hash: BytesN<32> =
-            BytesN::from_array(&env, &[1u8; 32]);
+        let non_zero_hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
         let mut path: Vec<ProofNode> = Vec::new(&env);
         for _ in 0..(MAX_PROOF_DEPTH + 1) {
             path.push_back(ProofNode {
