@@ -559,6 +559,9 @@ impl AtomicSwap {
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveListingSwap(swap.listing_id));
+        env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
@@ -3011,5 +3014,25 @@ mod test {
                 "SellerIndex TTL should have been extended by get_swaps_by_seller"
             );
         });
+    }
+
+    #[test]
+    fn test_initiate_swap_after_confirm_clears_active_listing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        // Complete a first swap on the listing
+        confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+
+        // Mint USDC for a second buyer and initiate a new swap on the same listing
+        let buyer2 = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer2, &500);
+        let swap_id2 = client.initiate_swap(&listing_id, &buyer2, &seller, &usdc_id, &500);
+        assert!(swap_id2 > 0);
     }
 }
