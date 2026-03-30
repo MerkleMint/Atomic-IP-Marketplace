@@ -409,15 +409,6 @@ impl IpRegistry {
             prices_usdc.push_back(entry.price_usdc);
             royalty_bps_list.push_back(entry.royalty_bps);
 
-            ListingRegistered {
-                listing_id: id,
-                owner: owner.clone(),
-                ipfs_hash: entry.ipfs_hash,
-                price_usdc: entry.price_usdc,
-                royalty_bps: entry.royalty_bps,
-            }
-            .publish(&env);
-
             j += 1;
         }
 
@@ -1130,6 +1121,9 @@ mod test {
             price_usdc: 2000,
         });
         client.batch_register_ip(&owner, &entries);
+
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(events.events().len(), 1);
 
         assert_eq!(client.listing_count(), 2);
 
