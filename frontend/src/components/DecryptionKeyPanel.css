@@ -113,3 +113,62 @@
 @keyframes dkp-spin {
   to { transform: rotate(360deg); }
 }
+
+.dkp__ipfs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid #c6f6d5;
+}
+
+.dkp__ipfs-btn {
+  align-self: flex-start;
+  padding: 6px 14px;
+  background: #fff;
+  color: #276749;
+  border: 1px solid #9ae6b4;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.dkp__ipfs-btn:hover:not(:disabled) {
+  background: #c6f6d5;
+}
+
+.dkp__ipfs-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dkp__ipfs-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dkp__ipfs-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #276749;
+  margin: 0;
+}
+
+.dkp__ipfs-pre {
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #9ae6b4;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #22543d;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+}

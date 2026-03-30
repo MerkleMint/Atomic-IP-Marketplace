@@ -38,7 +38,11 @@ export function SwapCard({ swap, ledgerTimestamp, wallet, onSwapUpdated }: Props
       )}
 
       {isBuyer && isCompleted && (
-        <DecryptionKeyPanel swapId={swap.id} cachedKey={swap.decryption_key} />
+        <DecryptionKeyPanel
+          swapId={swap.id}
+          listingId={swap.listing_id}
+          cachedKey={swap.decryption_key}
+        />
       )}
 
       {isSeller && (

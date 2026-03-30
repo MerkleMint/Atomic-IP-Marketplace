@@ -5,6 +5,7 @@ const RPC_URL =
   import.meta.env.VITE_STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org";
 
 const ATOMIC_SWAP_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP as string | undefined;
+const IP_REGISTRY_CONTRACT_ID = import.meta.env.VITE_CONTRACT_IP_REGISTRY as string | undefined;
 
 function networkPassphrase(): string {
   return import.meta.env.VITE_STELLAR_NETWORK === "mainnet"
@@ -13,6 +14,14 @@ function networkPassphrase(): string {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface Listing {
+  ipfs_hash: string;
+  merkle_root: string;
+  royalty_bps: number;
+  owner: string;
+  price_usdc: number;
+}
 
 export interface Swap {
   id: number;
@@ -146,6 +155,55 @@ export async function getDecryptionKey(swapId: number): Promise<string | null> {
 
 export async function getLedgerTimestamp(): Promise<number> {
   return Math.floor(Date.now() / 1000);
+}
+
+export async function getListing(listingId: number): Promise<Listing | null> {
+  if (!IP_REGISTRY_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const keypair = StellarSdk.Keypair.random();
+  const account = new StellarSdk.Account(keypair.publicKey(), "0");
+  const contract = new StellarSdk.Contract(IP_REGISTRY_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call("get_listing", StellarSdk.nativeToScVal(listingId, { type: "u64" }))
+    )
+    .setTimeout(30)
+    .build();
+
+  const result = await server.simulateTransaction(tx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(result)) {
+    throw new Error(`Simulation failed: ${result.error}`);
+  }
+
+  const retval = (result as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval) as Record<string, unknown>;
+  if (!native || typeof native !== "object") return null;
+
+  const rawHash = native.ipfs_hash;
+  const rawRoot = native.merkle_root;
+
+  return {
+    ipfs_hash:
+      rawHash instanceof Uint8Array
+        ? new TextDecoder().decode(rawHash)
+        : String(rawHash ?? ""),
+    merkle_root:
+      rawRoot instanceof Uint8Array
+        ? Buffer.from(rawRoot).toString("hex")
+        : String(rawRoot ?? ""),
+    royalty_bps: Number(native.royalty_bps ?? 0),
+    owner: String(native.owner ?? ""),
+    price_usdc: Number(native.price_usdc ?? 0),
+  };
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────

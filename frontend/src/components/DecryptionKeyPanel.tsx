@@ -1,19 +1,25 @@
 import React, { useState, useCallback } from "react";
-import { getDecryptionKey } from "../lib/contractClient";
+import { getDecryptionKey, getListing } from "../lib/contractClient";
+import { fetchFromIpfs, decryptAesGcm } from "../lib/ipfs";
 import "./DecryptionKeyPanel.css";
 
 interface Props {
   swapId: number;
+  listingId: number;
   /** Key already decoded from the Swap struct (populated after confirm_swap) */
   cachedKey: string | null;
 }
 
-export function DecryptionKeyPanel({ swapId, cachedKey }: Props) {
-  // Prefer the key already present in the swap object; only fetch on demand if absent
+export function DecryptionKeyPanel({ swapId, listingId, cachedKey }: Props) {
   const [key, setKey] = useState<string | null>(cachedKey);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // IPFS decrypt state
+  const [ipfsLoading, setIpfsLoading] = useState(false);
+  const [ipfsError, setIpfsError] = useState<string | null>(null);
+  const [ipfsContent, setIpfsContent] = useState<string | null>(null);
 
   const fetchKey = useCallback(async () => {
     setLoading(true);
@@ -39,7 +45,6 @@ export function DecryptionKeyPanel({ swapId, cachedKey }: Props) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback for environments without clipboard API
       const el = document.createElement("textarea");
       el.value = key;
       el.style.position = "fixed";
@@ -53,6 +58,24 @@ export function DecryptionKeyPanel({ swapId, cachedKey }: Props) {
     }
   }, [key]);
 
+  const fetchAndDecrypt = useCallback(async () => {
+    if (!key) return;
+    setIpfsLoading(true);
+    setIpfsError(null);
+    setIpfsContent(null);
+    try {
+      const listing = await getListing(listingId);
+      if (!listing?.ipfs_hash) throw new Error("Listing IPFS hash not found.");
+      const ciphertext = await fetchFromIpfs(listing.ipfs_hash);
+      const plaintext = await decryptAesGcm(ciphertext, key);
+      setIpfsContent(plaintext);
+    } catch (err) {
+      setIpfsError(err instanceof Error ? err.message : "Failed to fetch or decrypt content.");
+    } finally {
+      setIpfsLoading(false);
+    }
+  }, [key, listingId]);
+
   return (
     <div className="dkp" role="region" aria-label="Decryption Key">
       <p className="dkp__title">Decryption Key</p>
@@ -63,13 +86,9 @@ export function DecryptionKeyPanel({ swapId, cachedKey }: Props) {
         </button>
       )}
 
-      {loading && (
-        <span className="dkp__spinner" aria-label="Loading decryption key" />
-      )}
+      {loading && <span className="dkp__spinner" aria-label="Loading decryption key" />}
 
-      {error && (
-        <p className="dkp__error" role="alert">{error}</p>
-      )}
+      {error && <p className="dkp__error" role="alert">{error}</p>}
 
       {key && (
         <>
@@ -90,6 +109,30 @@ export function DecryptionKeyPanel({ swapId, cachedKey }: Props) {
               Store this key securely. Anyone with this key can decrypt the purchased IP asset.
               Do not share it or store it in an insecure location.
             </span>
+          </div>
+
+          <div className="dkp__ipfs-section">
+            <button
+              className="dkp__ipfs-btn"
+              onClick={fetchAndDecrypt}
+              disabled={ipfsLoading}
+              aria-busy={ipfsLoading}
+            >
+              {ipfsLoading ? "Decrypting…" : "Fetch & Decrypt IP Asset"}
+            </button>
+
+            {ipfsLoading && <span className="dkp__spinner" aria-label="Decrypting content" />}
+
+            {ipfsError && (
+              <p className="dkp__error" role="alert">{ipfsError}</p>
+            )}
+
+            {ipfsContent && (
+              <div className="dkp__ipfs-content">
+                <p className="dkp__ipfs-label">Decrypted Content</p>
+                <pre className="dkp__ipfs-pre">{ipfsContent}</pre>
+              </div>
+            )}
           </div>
         </>
       )}
