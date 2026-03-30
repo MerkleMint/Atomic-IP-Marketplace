@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { USDC_DECIMALS } from "./types";
 import {
   CONTRACT_ATOMIC_SWAP,
   CONTRACT_IP_REGISTRY,
@@ -308,7 +309,9 @@ export async function approveUsdc(
     { type: "address" }
   );
 
-  // Expiration typically requires ledger seq, but since this is testnet/demo, we can just supply a large number or the expected expiration argument
+  const ledgerResponse = await server.getLatestLedger();
+  const expirationLedger = ledgerResponse.sequence + 100;
+
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
     networkPassphrase: networkPassphrase(),
@@ -319,7 +322,7 @@ export async function approveUsdc(
         fromAddressScVal,
         spenderAddressScVal,
         StellarSdk.nativeToScVal(amount, { type: "i128" }),
-        StellarSdk.nativeToScVal(0, { type: "u32" }) // expiration ledger
+        StellarSdk.nativeToScVal(expirationLedger, { type: "u32" })
       )
     )
     .setTimeout(30)
@@ -631,8 +634,7 @@ export async function getSwapsBySeller(sellerAddress: string) {
 // ─── USDC Balance ─────────────────────────────────────────────────────────────
 
 const USDC_CONTRACT_ID = CONTRACT_USDC;
-// Stellar USDC uses 7 decimal places (10_000_000 stroops = 1 USDC)
-export const USDC_DECIMALS = 7;
+export { USDC_DECIMALS } from "./types";
 
 /**
  * Fetch the USDC balance for a given address by calling `balance(address)`

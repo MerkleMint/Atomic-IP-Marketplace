@@ -19,6 +19,7 @@ fi
 : "${ATOMIC_SWAP_FEE_BPS:=0}"
 : "${ATOMIC_SWAP_FEE_RECIPIENT:?ATOMIC_SWAP_FEE_RECIPIENT must be set in .env}"
 : "${ATOMIC_SWAP_CANCEL_DELAY_SECS:=3600}"
+: "${ATOMIC_SWAP_EXPIRY_SECS:=86400}"
 : "${IP_REGISTRY_TTL_THRESHOLD:=100000}"
 : "${IP_REGISTRY_TTL_EXTEND_TO:=200000}"
 
@@ -66,7 +67,9 @@ if ! stellar contract invoke \
   --fee_bps "$ATOMIC_SWAP_FEE_BPS" \
   --fee_recipient "$ATOMIC_SWAP_FEE_RECIPIENT" \
   --cancel_delay_secs "$ATOMIC_SWAP_CANCEL_DELAY_SECS" \
-  --zk_verifier "$ZK_VERIFIER"; then
+  --swap_expiry_secs "${ATOMIC_SWAP_EXPIRY_SECS:-86400}" \
+  --zk_verifier "$ZK_VERIFIER" \
+  --ip_registry "$IP_REGISTRY"; then
   echo "Failed to initialize atomic swap contract: $ATOMIC_SWAP" >&2
   exit 1
 fi

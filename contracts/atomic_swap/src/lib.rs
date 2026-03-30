@@ -1092,8 +1092,7 @@ mod test {
         let admin = Address::generate(env);
         let fee_recipient = Address::generate(env);
         let zk_id = env.register(ZkVerifier, ());
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
         (usdc_id, listing_id, registry_id, contract_id, client, admin, zk_id)
     }
@@ -1869,8 +1868,6 @@ mod test {
         buyer: &Address,
         seller: &Address,
         usdc_id: &Address,
-        proof_path: &soroban_sdk::Vec<ProofNode>,
-        key: &Bytes,
         usdc_amount: i128,
     ) -> u64 {
         let key_bytes = Bytes::from_slice(env, b"key");
@@ -1896,13 +1893,8 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
-            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         client.raise_dispute(&swap_id);
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Disputed));
@@ -1918,13 +1910,8 @@ mod test {
         let (usdc_id, listing_id, registry_id, contract_id, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
-            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         client.raise_dispute(&swap_id);
 
@@ -1955,14 +1942,9 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         client.set_dispute_window(&10u32);
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
-            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.raise_dispute(&swap_id);
@@ -1981,15 +1963,7 @@ mod test {
         // Set a 10-ledger dispute window
         client.set_dispute_window(&10u32);
         let swap_id = confirmed_swap(
-            &env,
-            &client,
-            listing_id,
-            &buyer,
-            &seller,
-            &usdc_id,
-            &soroban_sdk::Vec::new(&env), // dummy proof
-            &Bytes::from_slice(&env, b"dummy"),
-            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
 
         // Advance only 5 ledgers — window has NOT expired yet
@@ -2117,12 +2091,8 @@ mod test {
             setup_full(&env, &buyer, &seller, 500, 500);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         client.raise_dispute(&swap_id);
         client.resolve_dispute(&swap_id, &true);
@@ -2145,12 +2115,8 @@ mod test {
             setup_full(&env, &buyer, &seller, 500, 500);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         client.raise_dispute(&swap_id);
         client.resolve_dispute(&swap_id, &false);
@@ -2220,12 +2186,8 @@ mod test {
         let (usdc_id, listing_id, registry_id, contract_id, client, admin, _zk_id) =
             setup_full(&env, &buyer, &seller, 500, 500);
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
-
         let swap_id = confirmed_swap(
-            &env, &client, listing_id, &buyer, &seller, &usdc_id,
-            &proof_path, &key_bytes,
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
         client.raise_dispute(&swap_id);
 
@@ -3064,7 +3026,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, _registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, _registry_id, _cid, client, _admin, _zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
         pending_swap(
             &env,
@@ -3128,7 +3090,6 @@ mod test {
             &500,
         );
     }
-    }
 
     // ── Issue #448 test ────────────────────────────────────────────
 
@@ -3151,7 +3112,6 @@ mod test {
             &fee_recipient,
             &60u64,
             &3600u64,
-            &86_400u64,
             &zk_verifier,
             &ip_registry,
         );
@@ -3170,7 +3130,6 @@ mod test {
         let (usdc_id, listing_id, registry_id, _, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 500);
 
-        let zk_verifier = Address::generate(&env);
         client.initiate_swap(
             &listing_id,
             &buyer,
@@ -3178,6 +3137,8 @@ mod test {
             &usdc_id,
             &500,
         );
+    }
+
     // ── TTL extension on index reads (Issue fix) ──────────────────────────────
 
     #[test]
@@ -3187,7 +3148,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin, _zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
         pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
@@ -3219,7 +3180,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin, _zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
         pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
@@ -3251,16 +3212,39 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, _registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, _registry_id, contract_id, client, _admin, _zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
         // Complete a first swap on the listing
-        confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        let swap_id1 = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        assert_eq!(client.get_swap_status(&swap_id1), Some(SwapStatus::Completed));
 
-        // Mint USDC for a second buyer and initiate a new swap on the same listing
+        // Verify ActiveListingSwap is removed after confirm_swap
+        env.as_contract(&contract_id, || {
+            assert!(
+                !env.storage()
+                    .persistent()
+                    .has(&DataKey::ActiveListingSwap(listing_id)),
+                "ActiveListingSwap must be removed after confirm_swap"
+            );
+        });
+
+        // Mint USDC for a second buyer and initiate a new swap on the same listing.
+        // This must succeed — no SwapAlreadyPending from the stale completed entry.
         let buyer2 = Address::generate(&env);
         token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer2, &500);
         let swap_id2 = client.initiate_swap(&listing_id, &buyer2, &seller, &usdc_id, &500);
-        assert!(swap_id2 > 0);
+        assert_ne!(swap_id1, swap_id2);
+        assert_eq!(client.get_swap_status(&swap_id2), Some(SwapStatus::Pending));
+
+        // ActiveListingSwap now points to the new pending swap
+        env.as_contract(&contract_id, || {
+            let active: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ActiveListingSwap(listing_id))
+                .expect("ActiveListingSwap should exist for new swap");
+            assert_eq!(active, swap_id2);
+        });
     }
 }
