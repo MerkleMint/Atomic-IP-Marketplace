@@ -1,50 +1,38 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  type ReactNode,
-} from "react";
-import {
-  connectWallet,
-  getSavedWalletId,
-  clearSavedWallet,
-  WALLET_IDS,
-  type ConnectedWallet,
-  type WalletId,
-} from "../lib/walletKit";
-
-const NETWORK_PASSPHRASE =
-  import.meta.env.VITE_STELLAR_NETWORK === "mainnet"
-    ? "Public Global Stellar Network ; September 2015"
-    : "Test SDF Network ; September 2015";
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { connectWallet, getAvailableWallets, FREIGHTER_ID } from "../lib/walletKit";
+import type { Wallet, ISupportedWallet } from "../lib/walletKit";
 
 interface WalletContextValue {
-  wallet: ConnectedWallet | null;
+  wallet: Wallet | null;
   connecting: boolean;
   error: string | null;
+  availableWallets: ISupportedWallet[];
   connect: (walletId: string) => Promise<void>;
   disconnect: () => void;
-  WALLET_IDS: typeof WALLET_IDS;
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
-export function WalletProvider({ children }: { children: ReactNode }) {
-  const [wallet, setWallet] = useState<ConnectedWallet | null>(null);
+const STORAGE_KEY = "swk_wallet_id";
+
+export function WalletProvider({ children }: { children: React.ReactNode }) {
+  const [wallet, setWallet] = useState<Wallet | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [availableWallets, setAvailableWallets] = useState<ISupportedWallet[]>([]);
 
-  // Auto-reconnect on mount if a wallet was previously selected
   useEffect(() => {
-    const savedId = getSavedWalletId();
+    getAvailableWallets().then(setAvailableWallets).catch(() => {});
+    const savedId = localStorage.getItem(STORAGE_KEY);
     if (!savedId) return;
-
     setConnecting(true);
-    connectWallet(savedId, NETWORK_PASSPHRASE)
+    setError(null);
+    connectWallet(savedId)
       .then(setWallet)
-      .catch(() => clearSavedWallet())
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Auto-reconnect failed.");
+        localStorage.removeItem(STORAGE_KEY);
+      })
       .finally(() => setConnecting(false));
   }, []);
 
@@ -52,11 +40,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setError(null);
     setConnecting(true);
     try {
-      const w = await connectWallet(walletId, NETWORK_PASSPHRASE);
+      const w = await connectWallet(walletId);
+      localStorage.setItem(STORAGE_KEY, walletId);
       setWallet(w);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to connect wallet.";
-      setError(msg);
+      setError(err instanceof Error ? err.message : "Failed to connect wallet.");
       throw err;
     } finally {
       setConnecting(false);
@@ -64,13 +52,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
-    clearSavedWallet();
+    localStorage.removeItem(STORAGE_KEY);
     setWallet(null);
     setError(null);
   }, []);
 
   return (
-    <WalletContext.Provider value={{ wallet, connecting, error, connect, disconnect, WALLET_IDS }}>
+    <WalletContext.Provider value={{ wallet, connecting, error, availableWallets, connect, disconnect }}>
       {children}
     </WalletContext.Provider>
   );
@@ -81,3 +69,5 @@ export function useWallet(): WalletContextValue {
   if (!ctx) throw new Error("useWallet must be used inside <WalletProvider>");
   return ctx;
 }
+
+export { FREIGHTER_ID };

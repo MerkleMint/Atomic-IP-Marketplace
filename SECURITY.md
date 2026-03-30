@@ -4,7 +4,8 @@
 
 We take security seriously and appreciate your efforts to protect our users and the integrity of Atomic IP Marketplace contracts.
 
-If you discover a vulnerability, we would like to know about it as soon as possible. Please report it privately to the project maintainers via email at `farouq@atomic-ip-marketplace.com` (or your preferred contact).
+If you discover a vulnerability, we would like to know about it as soon as possible. Please report it privately to the project maintainers via email at `farouq@atomic-ip-marketplace.com`.
+If the upstream repository has GitHub Security Advisories enabled, you may also use that private reporting channel instead of email.
 
 ### Disclosure Process
 1. **Report the issue** privately with a detailed description, including reproduction steps, impact, and any proof-of-concept.
@@ -43,5 +44,5 @@ No formal bug bounty program yet. Responsible disclosures may receive recognitio
 
 ---
 
-*Last updated: October 2024*
+*Last updated: March 2026*
 *Project: Atomic IP Marketplace (Soroban contracts)*

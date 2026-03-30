@@ -92,3 +92,14 @@
   color: #e53e3e;
   margin: 0;
 }
+
+/* Updated balance after confirmation */
+.confirm-swap-form__balance {
+  font-size: 13px;
+  color: #276749;
+  background: #f0fff4;
+  border: 1px solid #9ae6b4;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 0;
+}

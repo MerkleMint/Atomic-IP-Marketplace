@@ -1,26 +1,37 @@
-import React from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { NetworkProvider } from "./context/NetworkContext";
 import { WalletProvider } from "./context/WalletContext";
+import { NetworkSelector } from "./components/NetworkSelector";
 import { WalletConnectButton } from "./components/WalletConnectButton";
 import { MySwapsDashboard } from "./components/MySwapsDashboard";
+import { MyListingsDashboard } from "./components/MyListingsDashboard";
+import { ListingsPage } from "./components/ListingsPage";
+import { SwapPage } from "./components/SwapPage";
 
-/**
- * App root.
- *
- * A single WalletProvider wraps both UI surfaces so they share wallet state.
- * React Portals render each piece into its own DOM node while keeping them
- * in the same React tree (and therefore the same context).
- */
 function App() {
+  const networkRoot = document.getElementById("network-root");
   const walletRoot = document.getElementById("wallet-root");
   const dashboardRoot = document.getElementById("dashboard-root");
+  const listingsRoot = document.getElementById("listings-dashboard-root");
 
   return (
-    <WalletProvider>
-      {walletRoot && createPortal(<WalletConnectButton />, walletRoot)}
-      {dashboardRoot && createPortal(<MySwapsDashboard />, dashboardRoot)}
-    </WalletProvider>
+    <NetworkProvider>
+      <WalletProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<ListingsPage />} />
+            <Route path="/swap/:id" element={<SwapPage />} />
+          </Routes>
+        </BrowserRouter>
+
+        {networkRoot && createPortal(<NetworkSelector />, networkRoot)}
+        {walletRoot && createPortal(<WalletConnectButton />, walletRoot)}
+        {dashboardRoot && createPortal(<MySwapsDashboard />, dashboardRoot)}
+        {listingsRoot && createPortal(<MyListingsDashboard />, listingsRoot)}
+      </WalletProvider>
+    </NetworkProvider>
   );
 }
 

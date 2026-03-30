@@ -1,20 +1,20 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { useCountdown } from "../hooks/useCountdown";
-import { cancelSwap, type Swap } from "../lib/contractClient";
-import type { ConnectedWallet } from "../lib/walletKit";
+import { cancelSwap } from "../lib/contractClient";
+import type { Wallet } from "../lib/walletKit";
+import type { Swap } from "../hooks/useMySwaps";
 import "./CancelSwapButton.css";
 
 interface Props {
   swap: Swap;
   ledgerTimestamp: number;
-  wallet: ConnectedWallet;
+  wallet: Wallet;
   onSuccess: () => void;
 }
 
 export function CancelSwapButton({ swap, ledgerTimestamp, wallet, onSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const { remaining, formatted } = useCountdown(swap.expires_at);
 
   if (swap.status !== "Pending") return null;
@@ -28,7 +28,7 @@ export function CancelSwapButton({ swap, ledgerTimestamp, wallet, onSuccess }: P
       await cancelSwap(swap.id, wallet);
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel swap. Please try again.");
+      setError(err instanceof Error ? err.message : "Failed to cancel swap.");
     } finally {
       setLoading(false);
     }
@@ -37,17 +37,9 @@ export function CancelSwapButton({ swap, ledgerTimestamp, wallet, onSuccess }: P
   return (
     <div className="cancel-swap-wrapper">
       {isExpired ? (
-        <button
-          className="cancel-swap-btn"
-          onClick={handleCancel}
-          disabled={loading}
-          aria-busy={loading}
-        >
-          {loading ? (
-            <span className="cancel-swap-spinner" aria-label="Cancelling..." />
-          ) : (
-            "Cancel Swap"
-          )}
+        <button className="cancel-swap-btn" onClick={handleCancel} disabled={loading} aria-busy={loading}>
+          {loading && <span className="cancel-swap-spinner" aria-hidden="true" />}
+          {loading ? "Cancelling…" : "Cancel Swap"}
         </button>
       ) : (
         <div className="cancel-swap-countdown" aria-label="Time until cancellable">
@@ -55,12 +47,7 @@ export function CancelSwapButton({ swap, ledgerTimestamp, wallet, onSuccess }: P
           <span className="cancel-swap-countdown__timer">{formatted}</span>
         </div>
       )}
-
-      {error && (
-        <p className="cancel-swap-error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <p className="cancel-swap-error" role="alert">{error}</p>}
     </div>
   );
 }

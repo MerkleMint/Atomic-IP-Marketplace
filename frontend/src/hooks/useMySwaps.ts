@@ -1,17 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getSwapsByBuyer, getSwap, getLedgerTimestamp, type Swap } from "../lib/contractClient";
+import { getSwapsByBuyer, getSwapsBySeller, getSwap, getLedgerTimestamp } from "../lib/contractClient";
 
 const POLL_INTERVAL_MS = 15_000;
 
-interface UseMySwapsResult {
-  swaps: Swap[];
-  ledgerTimestamp: number;
-  loading: boolean;
-  error: string | null;
-  refresh: () => void;
+export interface Swap {
+  id: number;
+  listing_id: number;
+  buyer: string;
+  seller: string;
+  usdc_amount: number;
+  usdc_token: string;
+  created_at: number;
+  expires_at: number;
+  status: string;
+  decryption_key: string | null;
 }
 
-export function useMySwaps(buyerAddress: string | null): UseMySwapsResult {
+export function useMySwaps(walletAddress: string | null) {
   const [swaps, setSwaps] = useState<Swap[]>([]);
   const [ledgerTimestamp, setLedgerTimestamp] = useState<number>(
     () => Math.floor(Date.now() / 1000)
@@ -21,48 +26,55 @@ export function useMySwaps(buyerAddress: string | null): UseMySwapsResult {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchSwaps = useCallback(async () => {
-    if (!buyerAddress) {
-      setSwaps([]);
-      return;
-    }
-
+    if (!walletAddress) { setSwaps([]); return; }
     setLoading(true);
     setError(null);
-
     try {
-      const [ids, ts] = await Promise.all([
-        getSwapsByBuyer(buyerAddress),
+      const [buyerIds, sellerIds, ts] = await Promise.all([
+        getSwapsByBuyer(walletAddress),
+        getSwapsBySeller(walletAddress).catch(() => [] as number[]),
         getLedgerTimestamp(),
       ]);
-
       setLedgerTimestamp(ts);
-
-      if (ids.length === 0) {
-        setSwaps([]);
-        return;
-      }
-
-      const results = await Promise.allSettled(ids.map((id) => getSwap(id)));
+      // Deduplicate IDs (a wallet could theoretically be both buyer and seller)
+      const allIds = [...new Set([...buyerIds, ...sellerIds])];
+      if (allIds.length === 0) { setSwaps([]); return; }
+      const results = await Promise.allSettled(allIds.map((id) => getSwap(id)));
       const loaded = results
-        .filter(
-          (r): r is PromiseFulfilledResult<Swap> =>
-            r.status === "fulfilled" && r.value !== null
-        )
+        .filter((r): r is PromiseFulfilledResult<Swap> => r.status === "fulfilled" && r.value !== null)
         .map((r) => r.value);
-
       setSwaps(loaded);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load swaps.");
     } finally {
       setLoading(false);
     }
-  }, [buyerAddress]);
+  }, [walletAddress]);
 
   useEffect(() => {
     fetchSwaps();
     timerRef.current = setInterval(fetchSwaps, POLL_INTERVAL_MS);
+
+    // Optimization: pause polling when the tab is hidden to avoid unnecessary RPC calls
+    // and reduce battery consumption on mobile devices
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+      } else {
+        // Tab became visible again, fetch immediately and restart polling
+        fetchSwaps();
+        timerRef.current = setInterval(fetchSwaps, POLL_INTERVAL_MS);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [fetchSwaps]);
 
