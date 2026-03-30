@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { NetworkProvider } from "./context/NetworkContext";
 import { WalletProvider } from "./context/WalletContext";
 import { WalletConnectButton } from "./components/WalletConnectButton";
 import { MySwapsDashboard } from "./components/MySwapsDashboard";
@@ -14,18 +15,20 @@ function App() {
   const listingsRoot = document.getElementById("listings-dashboard-root");
 
   return (
-    <WalletProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<ListingsPage />} />
-          <Route path="/swap/:id" element={<SwapPage />} />
-        </Routes>
-      </BrowserRouter>
+    <NetworkProvider>
+      <WalletProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<ListingsPage />} />
+            <Route path="/swap/:id" element={<SwapPage />} />
+          </Routes>
+        </BrowserRouter>
 
-      {walletRoot && createPortal(<WalletConnectButton />, walletRoot)}
-      {dashboardRoot && createPortal(<MySwapsDashboard />, dashboardRoot)}
-      {listingsRoot && createPortal(<MyListingsDashboard />, listingsRoot)}
-    </WalletProvider>
+        {walletRoot && createPortal(<WalletConnectButton />, walletRoot)}
+        {dashboardRoot && createPortal(<MySwapsDashboard />, dashboardRoot)}
+        {listingsRoot && createPortal(<MyListingsDashboard />, listingsRoot)}
+      </WalletProvider>
+    </NetworkProvider>
   );
 }
 

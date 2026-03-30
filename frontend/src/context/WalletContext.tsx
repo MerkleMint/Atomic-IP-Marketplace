@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { connectWallet, getAvailableWallets, FREIGHTER_ID } from "../lib/walletKit";
+import { useNetwork } from "./NetworkContext";
 import type { Wallet, ISupportedWallet } from "../lib/walletKit";
 
 interface WalletContextValue {
@@ -16,11 +17,13 @@ const WalletContext = createContext<WalletContextValue | null>(null);
 const STORAGE_KEY = "swk_wallet_id";
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
+  const { network } = useNetwork();
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [availableWallets, setAvailableWallets] = useState<ISupportedWallet[]>([]);
 
+  // Initialize wallet on mount
   useEffect(() => {
     getAvailableWallets().then(setAvailableWallets).catch(() => {});
     const savedId = localStorage.getItem(STORAGE_KEY);
@@ -35,6 +38,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       })
       .finally(() => setConnecting(false));
   }, []);
+
+  // Disconnect wallet when network changes to force reconnection with new network
+  useEffect(() => {
+    if (wallet) {
+      setWallet(null);
+      setError(null);
+    }
+  }, [network]);
 
   const connect = useCallback(async (walletId: string) => {
     setError(null);
