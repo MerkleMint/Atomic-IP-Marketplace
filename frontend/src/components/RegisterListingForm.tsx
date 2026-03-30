@@ -1,138 +1,10 @@
 import React, { useState } from "react";
 import { registerIp } from "../lib/contractClient";
-import type { Wallet } from "../lib/walletKit"; // Adjust if wallet type differs
 import type { Wallet } from "../lib/walletKit";
 import "./RegisterListingForm.css";
-import { CopyButton } from "./CopyButton";
 
 interface Props {
   wallet: Wallet;
-  onSuccess?: (listingId: number) => void;
-}
-
-type Status = "idle" | "submitting" | "success" | "error";
-
-export function RegisterListingForm({ wallet, onSuccess }: Props) {
-  const [ipfsHash, setIpfsHash] = useState("");
-  const [merkleRoot, setMerkleRoot] = useState("");
-  const [status, setStatus] = useState<Status>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [newListingId, setNewListingId] = useState<number | null>(null);
-
-  const isValidHex32 = (v: string) => /^[0-9a-fA-F]{64}$/.test(v.replace(/^0x/, ""));
-  const isValidIpfsCid = (v: string) => v.trim().length > 10; // Basic CID length check
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setStatus("submitting");
-
-    if (!ipfsHash.trim()) {
-      setError("IPFS hash is required.");
-      setStatus("idle");
-      return;
-    }
-    if (!isValidIpfsCid(ipfsHash)) {
-      setError("IPFS hash appears invalid (should be a valid CID).");
-      setStatus("idle");
-      return;
-    }
-    if (merkleRoot && !isValidHex32(merkleRoot)) {
-      setError("Merkle root must be a 64-character hex string (32 bytes).");
-      setStatus("idle");
-      return;
-    }
-
-    try {
-      const listingId = await registerIp(ipfsHash.trim(), merkleRoot.trim() || null, wallet);
-      setNewListingId(listingId);
-      setStatus("success");
-      onSuccess?.(listingId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed.");
-      setStatus("error");
-    }
-  };
-
-  const resetForm = () => {
-    setIpfsHash("");
-    setMerkleRoot("");
-    setStatus("idle");
-    setError(null);
-    setNewListingId(null);
-  };
-
-  return (
-    <div className="rlf">
-      <form className="rlf__form" onSubmit={handleSubmit}>
-        <h3 className="rlf__title">Register New IP Listing</h3>
-        <p className="rlf__desc">
-          Submit your IPFS hash to register a new listing on the IP Registry contract.
-        </p>
-
-        <fieldset disabled={status === "submitting"} aria-busy={status === "submitting"}>
-          <label className="rlf__label" htmlFor="ipfs-hash">
-            IPFS Hash (CID)
-          </label>
-          <input
-            id="ipfs-hash"
-            className="rlf__input rlf__input--mono"
-            type="text"
-            value={ipfsHash}
-            onChange={(e) => {
-              setIpfsHash(e.target.value);
-              if (status !== "submitting") setStatus("idle");
-            }}
-            placeholder="QmX... (IPFS CIDv0)"
-            spellCheck={false}
-            aria-describedby={error ? "ipfs-err" : undefined}
-          />
-
-          <label className="rlf__label" htmlFor="merkle-root">
-            Merkle Root (optional, 64-char hex)
-          </label>
-          <input
-            id="merkle-root"
-            className="rlf__input rlf__input--mono"
-            type="text"
-            value={merkleRoot}
-            onChange={(e) => {
-              setMerkleRoot(e.target.value);
-              if (status !== "submitting") setStatus("idle");
-            }}
-            placeholder="a1b2c3... (64 hex chars)"
-            maxLength={66}
-            spellCheck={false}
-          />
-
-          {error && (
-            <p id="ipfs-err" className="rlf__error" role="alert">{error}</p>
-          )}
-
-          {status === "success" && newListingId && (
-            <div className="rlf__success">
-              <p className="rlf__success-msg" role="status">
-                Listing registered successfully! ID: <strong>#{newListingId}</strong>
-              </p>
-              <button
-                type="button"
-                className="rlf__btn rlf__btn--secondary"
-                onClick={resetForm}
-              >
-                Register Another
-              </button>
-            </div>
-          )}
-
-          <button
-            className="rlf__btn rlf__btn--primary"
-            type="submit"
-            disabled={status === "submitting"}
-          >
-            {status === "submitting" ? "Registering..." : "Register Listing"}
-          </button>
-        </fieldset>
-      </form>
   onSuccess?: () => void;
   onCancel?: () => void;
 }
@@ -171,29 +43,46 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
   // Validate a single field
   const validateField = (field: keyof FormData, value: string): string | undefined => {
     switch (field) {
-      case "ipfsHash":
-        if (!value.trim()) return "IPFS hash is required.";
-        if (!/^[0-9a-fA-F]+$/.test(value.replace(/^0x/, ""))) return "IPFS hash must be a valid hex string.";
+      case "ipfsHash": {
+        const hash = value.trim();
+        if (!hash) return "IPFS hash is required.";
+        
+        // CID-aware check: accept strings starting with Qm (CIDv0), bafy (CIDv1), or a valid hex string
+        const isCidV0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44,}$/.test(hash);
+        const isCidV1 = /^bafy[a-zA-Z0-9]{55,}$/.test(hash);
+        const isHex = /^[0-9a-fA-F]+$/.test(hash.replace(/^0x/, ""));
+        const isMinLength = hash.length >= 10;
+
+        if (!isCidV0 && !isCidV1 && !isHex && !isMinLength) {
+          return "IPFS hash must be a valid CID (Qm... or bafy...) or hex string.";
+        }
         return undefined;
-      case "merkleRoot":
-        if (!value.trim()) return "Merkle root is required.";
-        if (!/^[0-9a-fA-F]{64}$/.test(value.replace(/^0x/, "")))
+      }
+      case "merkleRoot": {
+        const root = value.trim();
+        if (!root) return "Merkle root is required.";
+        if (!/^[0-9a-fA-F]{64}$/.test(root.replace(/^0x/, "")))
           return "Merkle root must be a 64-character hex string (32 bytes).";
         return undefined;
-      case "priceUsdc":
+      }
+      case "priceUsdc": {
         const price = parseFloat(value);
         if (!value.trim()) return "Price is required.";
         if (isNaN(price) || price <= 0) return "Price must be greater than 0.";
         return undefined;
-      case "royaltyBps":
+      }
+      case "royaltyBps": {
         const royalty = parseInt(value, 10);
         if (!value.trim()) return "Royalty BPS is required.";
         if (isNaN(royalty) || royalty < 0 || royalty > 10000) return "Royalty must be between 0 and 10000 basis points.";
         return undefined;
-      case "royaltyRecipient":
-        if (!value.trim()) return "Royalty recipient address is required.";
-        if (!/^G[A-Z0-9]{55}$/.test(value)) return "Must be a valid Stellar address (G...)";
+      }
+      case "royaltyRecipient": {
+        const recipient = value.trim();
+        if (!recipient) return "Royalty recipient address is required.";
+        if (!/^G[A-Z0-9]{55}$/.test(recipient)) return "Must be a valid Stellar address (G...)";
         return undefined;
+      }
       default:
         return undefined;
     }
@@ -285,7 +174,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
 
           <div className="rlf__field">
             <label className="rlf__label" htmlFor="ipfs-hash">
-              IPFS Hash <span className="rlf__required">*</span>
+              IPFS Hash / CID <span className="rlf__required">*</span>
             </label>
             <input
               id="ipfs-hash"
@@ -294,11 +183,12 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               value={formData.ipfsHash}
               onChange={handleChange("ipfsHash")}
               onBlur={handleBlur("ipfsHash")}
-              placeholder="e.g. Qm... or 0x..."
+              placeholder="e.g. Qm... or bafy... or 0x..."
               spellCheck={false}
               aria-describedby={errors.ipfsHash ? "ipfs-hash-error" : undefined}
             />
             {errors.ipfsHash && <p id="ipfs-hash-error" className="rlf__error" role="alert">{errors.ipfsHash}</p>}
+            <p className="rlf__hint">Accepts Qm... (v0), bafy... (v1), or hex.</p>
           </div>
 
           <div className="rlf__field">
@@ -312,7 +202,7 @@ export function RegisterListingForm({ wallet, onSuccess, onCancel }: Props) {
               value={formData.merkleRoot}
               onChange={handleChange("merkleRoot")}
               onBlur={handleBlur("merkleRoot")}
-              placeholder="e.g. 0xa3f1...c9d2 (64 hex chars)"
+              placeholder="e.g. 0xa3f1... (64 hex chars)"
               maxLength={66}
               spellCheck={false}
               aria-describedby={

@@ -1,6 +1,9 @@
 
+import { useState } from "react";
 import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
+import { RegisterListingForm } from "./RegisterListingForm";
+import { useWallet } from "../context/WalletContext";
 import type { Listing, Wallet } from "../lib/types";
 import "./MyListingsDashboard.css";
 
@@ -67,7 +70,7 @@ export function MyListingsDashboard() {
         <div className="mld__register-section">
           <RegisterListingForm 
             wallet={wallet} 
-            onSuccess={(id) => {
+            onSuccess={() => {
               setShowRegisterForm(false);
               refresh();
             }}
