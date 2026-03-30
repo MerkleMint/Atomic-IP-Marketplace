@@ -1015,6 +1015,20 @@ impl AtomicSwap {
             true
         }
     }
+
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        let old_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        old_admin.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Admin, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        AdminTransferred { old_admin, new_admin }.publish(&env);
+    }
 }
 
 #[cfg(test)]
@@ -3185,5 +3199,53 @@ mod test {
                 .expect("ActiveListingSwap should exist for new swap");
             assert_eq!(active, swap_id2);
         });
+    }
+
+    // ── transfer_admin tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_transfer_admin_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, contract_id, client, admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&new_admin);
+
+        // Verify the stored admin is now new_admin
+        env.as_contract(&contract_id, || {
+            let stored: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .unwrap();
+            assert_eq!(stored, new_admin);
+        });
+
+        // Verify AdminTransferred event was emitted
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let transferred = AdminTransferred::try_from_val(&env, &last.2).unwrap();
+        assert_eq!(transferred.old_admin, admin);
+        assert_eq!(transferred.new_admin, new_admin);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_transfer_admin_unauthorized() {
+        let env = Env::default();
+        // Do NOT mock_all_auths — auth must be enforced
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _contract_id, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        let attacker = Address::generate(&env);
+        // attacker is not the admin — must panic
+        client.transfer_admin(&attacker);
     }
 }
