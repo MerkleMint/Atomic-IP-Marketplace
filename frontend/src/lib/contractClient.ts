@@ -308,7 +308,9 @@ export async function approveUsdc(
     { type: "address" }
   );
 
-  // Expiration typically requires ledger seq, but since this is testnet/demo, we can just supply a large number or the expected expiration argument
+  const ledgerResponse = await server.getLatestLedger();
+  const expirationLedger = ledgerResponse.sequence + 100;
+
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
     networkPassphrase: networkPassphrase(),
@@ -319,7 +321,7 @@ export async function approveUsdc(
         fromAddressScVal,
         spenderAddressScVal,
         StellarSdk.nativeToScVal(amount, { type: "i128" }),
-        StellarSdk.nativeToScVal(0, { type: "u32" }) // expiration ledger
+        StellarSdk.nativeToScVal(expirationLedger, { type: "u32" })
       )
     )
     .setTimeout(30)
