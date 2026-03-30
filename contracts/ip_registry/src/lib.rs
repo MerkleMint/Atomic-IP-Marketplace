@@ -1090,16 +1090,19 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
+        let idx_key = DataKey::OwnerIndex(owner.clone());
 
         // Verify owner index exists
         assert_eq!(client.list_by_owner(&owner).len(), 1);
+        assert!(env.storage().persistent().has(&idx_key));
 
         // Deregister the only listing
         client.deregister_listing(&owner, &id);
 
-        // Verify listing is gone and owner index is empty
+        // Verify listing is gone and the empty owner index key was removed.
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert!(!env.storage().persistent().has(&idx_key));
     }
 
     #[test]
@@ -1550,6 +1553,22 @@ mod test {
             &owner,
             &-1i128,
         );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_negative_price_does_not_return_invalid_input() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &-1i128,
+        );
+        assert_ne!(result, Err(Ok(ContractError::InvalidInput)));
         assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
     }
 
