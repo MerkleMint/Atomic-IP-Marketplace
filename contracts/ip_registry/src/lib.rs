@@ -1255,16 +1255,41 @@ mod test {
 
     #[test]
     fn test_transfer_listing_ownership_rejects_pending_swap() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
 
-        // Mock has_pending_swap to return true
         env.mock_all_auths();
 
-        let result = client.try_transfer_listing_ownership(&owner, &id, &new_owner, &atomic_swap);
+        // Register a real AtomicSwap contract and seed a Pending swap for this listing.
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        let result =
+            client.try_transfer_listing_ownership(&owner, &id, &new_owner, &swap_contract_id);
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
 
         // Ownership unchanged
