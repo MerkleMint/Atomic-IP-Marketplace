@@ -2142,6 +2142,21 @@ mod test {
         assert_eq!(usdc_client.balance(&seller), 500);
     }
 
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_initialize_twice_returns_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
+    }
+
     /// Issue #571: resolve_dispute must not panic with FeeWouldTruncate for small amounts.
     /// When fee_bps > 0 but usdc_amount is too small for the fee to be non-zero,
     /// the full amount should go to the seller instead of the dispute being stuck.
