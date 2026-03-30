@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["contract"]
+contract = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
 

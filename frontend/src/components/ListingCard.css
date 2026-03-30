@@ -52,6 +52,12 @@
   text-decoration: none;
 }
 
+.lc__hash-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .lc__hash:hover {
   color: #6c63ff;
   text-decoration: underline;
@@ -187,8 +193,13 @@
 }
 
 @keyframes lc-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* ── Merkle root toggle ──────────────────────────────────────────────────── */

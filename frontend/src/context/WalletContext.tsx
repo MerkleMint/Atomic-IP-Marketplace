@@ -26,9 +26,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const savedId = localStorage.getItem(STORAGE_KEY);
     if (!savedId) return;
     setConnecting(true);
+    setError(null);
     connectWallet(savedId)
       .then(setWallet)
-      .catch(() => localStorage.removeItem(STORAGE_KEY))
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Auto-reconnect failed.");
+        localStorage.removeItem(STORAGE_KEY);
+      })
       .finally(() => setConnecting(false));
   }, []);
 
