@@ -483,6 +483,8 @@ impl IpRegistry {
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
+        new_price_usdc: i128,
+        new_royalty_bps: u32,
         atomic_swap: Address,
     ) -> Result<(), ContractError> {
         assert_not_paused(&env);
@@ -563,7 +565,9 @@ impl IpRegistry {
         if ids.is_empty() {
             env.storage().persistent().remove(&idx_key);
         } else {
+            let cfg = get_config(&env);
             env.storage().persistent().set(&idx_key, &ids);
+            extend_persistent(&env, &idx_key, &cfg);
         }
 
         IpDeregistered { listing_id, owner }.publish(&env);
@@ -1338,6 +1342,8 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"QmHashNew"),
             &Bytes::from_slice(&env, b"rootNew"),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
     }
@@ -1354,6 +1360,8 @@ mod test {
             &id,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -1371,6 +1379,8 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::new(&env),
+            &2000i128,
+            &0u32,
             &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -1378,19 +1388,41 @@ mod test {
 
     #[test]
     fn test_update_listing_rejects_pending_swap() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
         env.mock_all_auths();
+        // Register a real AtomicSwap contract and seed a Pending swap for this listing.
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+            };
+            env.storage().persistent().set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage().persistent().set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
 
         let result = client.try_update_listing(
             &owner,
             &id,
             &Bytes::from_slice(&env, b"newHash"),
             &Bytes::from_slice(&env, b"newRoot"),
-            &atomic_swap,
+            &2000i128,
+            &0u32,
+            &swap_contract_id,
         );
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
     }
@@ -1554,5 +1586,32 @@ mod test {
         let id = register(&client, &owner, b"QmHash", b"root", 1);
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.price_usdc, 1);
+    }
+
+    #[test]
+    fn test_deregister_listing_extends_ttl_near_expiry() {
+        // Advance to just before expiry, then call deregister.
+        // This must extend the TTL on the owner's index so remaining IDs persist.
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id1 = register(&client, &owner, b"QmNearExpiry1", b"root", 1);
+        let id2 = register(&client, &owner, b"QmNearExpiry2", b"root", 1);
+
+        // Verify index is properly populated
+        assert_eq!(client.list_by_owner(&owner).len(), 2);
+
+        // Advance to just inside the threshold window (expiry is EXTEND_TO ledgers away)
+        let near_expiry = EXTEND_TO - THRESHOLD + 1;
+        env.ledger().with_mut(|li| li.sequence_number += near_expiry);
+
+        // This operation should trigger extend_ttl on the idx_key DataKey::OwnerIndex
+        client.deregister_listing(&owner, &id1, &None);
+
+        // Advance another THRESHOLD ledgers. Without extension, OwnerIndex would be gone.
+        env.ledger().with_mut(|li| li.sequence_number += THRESHOLD);
+        
+        let ids = client.list_by_owner(&owner);
+        assert_eq!(ids.len(), 1, "Owner index failed to persist after deregistration extension window");
+        assert_eq!(ids.get(0).unwrap(), id2);
     }
 }
