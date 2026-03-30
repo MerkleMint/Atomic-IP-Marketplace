@@ -91,35 +91,41 @@ echo "=========================================="
 echo "Deployment complete!"
 echo "=========================================="
 echo "Contract addresses:"
-echo "  IP_REGISTRY:   $IP_REGISTRY"
-echo "  ATOMIC_SWAP:   $ATOMIC_SWAP"
-echo "  ZK_VERIFIER:   $ZK_VERIFIER"
+echo "  IP_REGISTRY : $IP_REGISTRY"
+echo "  ATOMIC_SWAP : $ATOMIC_SWAP"
+echo "  ZK_VERIFIER : $ZK_VERIFIER"
 echo "=========================================="
 echo "Updated .env with deployed contract IDs."
 echo ""
 
-echo ""
 echo "Running post-deployment smoke tests..."
 
-echo "  [ip_registry] get_listing(999) -> expect None"
-if ! stellar contract invoke \
+echo "  [ip_registry] get_listing(listing_id=999) -> expect None (contract is callable)"
+IP_REGISTRY_RESULT=$(stellar contract invoke \
   --id "$IP_REGISTRY" \
   --network "$STELLAR_NETWORK" \
   --source deployer \
-  -- get_listing --listing_id 999; then
-  echo "Failed to invoke get_listing on ip_registry: $IP_REGISTRY" >&2
+  -- get_listing --listing_id 999 2>&1) || {
+  echo "  ✗ FAILED: get_listing on ip_registry ($IP_REGISTRY)" >&2
+  echo "    $IP_REGISTRY_RESULT" >&2
   exit 1
-fi
+}
+echo "  ✓ ip_registry responded: $IP_REGISTRY_RESULT"
 
-echo "  [zk_verifier] get_merkle_root(999) -> expect None"
-if ! stellar contract invoke \
+echo "  [zk_verifier] get_merkle_root(listing_id=999) -> expect None (contract is callable)"
+ZK_VERIFIER_RESULT=$(stellar contract invoke \
   --id "$ZK_VERIFIER" \
   --network "$STELLAR_NETWORK" \
   --source deployer \
-  -- get_merkle_root --listing_id 999; then
-  echo "Failed to invoke get_merkle_root on zk_verifier: $ZK_VERIFIER" >&2
+  -- get_merkle_root --listing_id 999 2>&1) || {
+  echo "  ✗ FAILED: get_merkle_root on zk_verifier ($ZK_VERIFIER)" >&2
+  echo "    $ZK_VERIFIER_RESULT" >&2
   exit 1
-fi
+}
+echo "  ✓ zk_verifier responded: $ZK_VERIFIER_RESULT"
 
 echo ""
-echo "✓ Smoke tests passed. All three contracts are live and callable."
+echo "=========================================="
+echo "✓ All smoke tests passed."
+echo "  Contracts are live and callable on $STELLAR_NETWORK."
+echo "=========================================="
