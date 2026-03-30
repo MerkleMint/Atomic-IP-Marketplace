@@ -8,14 +8,11 @@ import {
   getListingCount,
   hasPendingSwap,
 } from "../lib/contractClient";
+import { Listing } from "../lib/types";
 
-interface Listing {
-  id: number;
-  ipfs_hash: string;
-  owner: string;
-  price: number;
+type ListingWithStatus = Listing & {
   status: "available" | "pending" | "sold";
-}
+};
 
 function truncateHash(hash: string): string {
   if (!hash) return "";
@@ -29,7 +26,7 @@ function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-6)}`;
 }
 
-async function fetchListings(): Promise<Listing[]> {
+async function fetchListings(): Promise<ListingWithStatus[]> {
   const count = await getListingCount();
 
   if (count === 0) {
@@ -46,12 +43,9 @@ async function fetchListings(): Promise<Listing[]> {
 
       const pending = await hasPendingSwap(listingId);
       return {
-        id: listing.id,
-        ipfs_hash: listing.ipfs_hash,
-        owner: listing.owner,
-        price: listing.price_usdc / 1e7,
+        ...listing,
         status: pending ? "pending" : "available",
-      } satisfies Listing;
+      } satisfies ListingWithStatus;
     })
   );
 
@@ -68,7 +62,7 @@ async function fetchListings(): Promise<Listing[]> {
 
 export function ListingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [allListings, setAllListings] = useState<Listing[]>([]);
+  const [allListings, setAllListings] = useState<ListingWithStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -162,12 +156,7 @@ export function ListingsPage() {
                   <span>Listing #{listing.id}</span>
                   <CopyButton text={listing.id.toString()} />
                 </div>
-                <span>{listing.price} USDC</span>
-              </div>
-
-              <div className="mb-3">
-                <p className="text-xs text-slate-400">IPFS Hash</p>
-                <div className="flex items-center gap-2">
+                <span>{listing.price_usdc / Math.pow(10, 7)} USDC</span>
                   <p
                     className="truncate text-sm font-medium text-slate-800"
                     title={listing.ipfs_hash}
