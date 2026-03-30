@@ -176,11 +176,11 @@ impl ZkVerifier {
             None => return false,
         };
 
-        if path.len() > MAX_PROOF_DEPTH as usize {
+        if (path.len() as u32) > MAX_PROOF_DEPTH {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
-        if path.len() > MAX_PROOF_DEPTH as usize {
+        if (path.len() as u32) > MAX_PROOF_DEPTH {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
@@ -803,4 +803,5 @@ mod test {
             "zero root must be rejected"
         );
     }
+}
 }

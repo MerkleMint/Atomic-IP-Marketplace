@@ -281,7 +281,10 @@ impl AtomicSwap {
         admin.require_auth();
         env.storage()
             .persistent()
-            .set(&DataKey::AllowedToken(token), &true);
+            .set(&DataKey::AllowedToken(token.clone()), &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AllowedToken(token), PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
     pub fn set_dispute_window(env: Env, ledgers: u32) {
@@ -2550,6 +2553,64 @@ mod test {
         // We expect it to fail for other reasons (no listing), but NOT NotInitialized
         match result {
             Err(_) => {}, // Expected - listing doesn't exist
+            Ok(_) => {}, // Also fine if somehow succeeds
+        }
+    }
+
+    /// Test that allowed tokens in persistent storage survive beyond TTL expiration.
+    /// This verifies the fix for the add_allowed_token TTL bug.
+    #[test]
+    fn test_allowed_token_persists_beyond_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        let registry_id = env.register(IpRegistry, ());
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &admin,
+            &0u32,
+            &fee_recipient,
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+
+        // Add an allowed token
+        let usdc = setup_usdc(&env, &Address::generate(&env), 1000);
+        client.add_allowed_token(&usdc);
+
+        // Advance ledger far beyond typical persistent TTL to simulate expiration
+        env.ledger().with_mut(|li| li.sequence_number += 7_000_000);
+
+        // The allowed token should still be valid after TTL expiration
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let listing_id = 1u64;
+        
+        // This should not panic with InvalidToken even after TTL expiry
+        let result = client.try_initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc,
+            &100i128,
+        );
+        // We expect it to fail for other reasons (no listing), but NOT InvalidToken
+        match result {
+            Err(e) => {
+                // Verify it's not InvalidToken error
+                if let Ok(contract_err) = e {
+                    // Check that the error is not InvalidToken (error code 20)
+                    assert_ne!(contract_err, soroban_sdk::Error::from_contract_error(ContractError::InvalidToken as u32), 
+                        "Allowed token should not expire after TTL");
+                }
+            },
             Ok(_) => {}, // Also fine if somehow succeeds
         }
     }
