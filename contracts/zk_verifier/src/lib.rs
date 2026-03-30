@@ -786,4 +786,21 @@ mod test {
         let path: Vec<ProofNode> = Vec::new(&env);
         assert!(!client.verify_partial_proof(&2u64, &leaf, &path));
     }
+
+    #[test]
+    fn test_set_merkle_root_rejects_zero_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let zero_root: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+        let result = client.try_set_merkle_root(&owner, &1u64, &zero_root);
+        assert_eq!(
+            result.unwrap_err().unwrap(),
+            ContractError::InvalidRoot,
+            "zero root must be rejected"
+        );
+    }
 }
