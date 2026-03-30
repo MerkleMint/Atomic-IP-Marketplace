@@ -1,3 +1,5 @@
+export const USDC_DECIMALS = 7;
+
 export interface Listing {
   id: number;
   owner: string;

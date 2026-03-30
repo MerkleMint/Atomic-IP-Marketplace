@@ -3,7 +3,7 @@ import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import "./ListingCard.css";
 import { CopyButton } from "./CopyButton";
-import { USDC_DECIMALS } from "../lib/contractClient";
+import { USDC_DECIMALS } from "../lib/types";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";

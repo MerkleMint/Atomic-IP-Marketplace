@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { USDC_DECIMALS } from "./types";
 import {
   CONTRACT_ATOMIC_SWAP,
   CONTRACT_IP_REGISTRY,
@@ -631,8 +632,7 @@ export async function getSwapsBySeller(sellerAddress: string) {
 // ─── USDC Balance ─────────────────────────────────────────────────────────────
 
 const USDC_CONTRACT_ID = CONTRACT_USDC;
-// Stellar USDC uses 7 decimal places (10_000_000 stroops = 1 USDC)
-export const USDC_DECIMALS = 7;
+export { USDC_DECIMALS } from "./types";
 
 /**
  * Fetch the USDC balance for a given address by calling `balance(address)`
