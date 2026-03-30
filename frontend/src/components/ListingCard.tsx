@@ -3,6 +3,7 @@ import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import "./ListingCard.css";
 import { CopyButton } from "./CopyButton";
+import { USDC_DECIMALS } from "../lib/contractClient";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
@@ -97,7 +98,7 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         </div>
         {listing.price_usdc > 0 && (
           <span className="lc__price">
-            {listing.price_usdc / 1_000_000} USDC
+            {listing.price_usdc / Math.pow(10, USDC_DECIMALS)} USDC
           </span>
         )}
       </div>
