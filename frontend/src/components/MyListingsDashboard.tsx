@@ -4,7 +4,6 @@ import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
 import { RegisterListingForm } from "./RegisterListingForm";
 import { useWallet } from "../context/WalletContext";
-import type { Listing, Wallet } from "../lib/types";
 import "./MyListingsDashboard.css";
 
 /**

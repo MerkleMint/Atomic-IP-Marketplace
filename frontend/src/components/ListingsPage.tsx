@@ -34,7 +34,7 @@ async function fetchListings(): Promise<ListingWithStatus[]> {
   }
 
   const listingIds = Array.from({ length: count }, (_, index) => index + 1);
-  const settledListings = await Promise.allSettled(
+  const settledListings: PromiseSettledResult<ListingWithStatus | null>[] = await Promise.allSettled(
     listingIds.map(async (listingId) => {
       const listing = await getListing(listingId);
       if (!listing) {
@@ -53,11 +53,10 @@ async function fetchListings(): Promise<ListingWithStatus[]> {
     .filter(
       (
         result
-      ): result is PromiseFulfilledResult<Listing | null> =>
-        result.status === "fulfilled"
+      ): result is PromiseFulfilledResult<ListingWithStatus> =>
+        result.status === "fulfilled" && result.value !== null
     )
     .map((result) => result.value)
-    .filter((listing): listing is Listing => listing !== null);
 }
 
 export function ListingsPage() {
@@ -110,7 +109,7 @@ export function ListingsPage() {
         if (mounted) {
           setAllListings(data);
         }
-      } catch (err) {
+      } catch {
         if (mounted) {
           setError("Unable to fetch listings at this time. Please try again.");
         }
@@ -157,6 +156,8 @@ export function ListingsPage() {
                   <CopyButton text={listing.id.toString()} />
                 </div>
                 <span>{listing.price_usdc / Math.pow(10, 7)} USDC</span>
+              </div>
+              <div className="mb-4 flex items-center gap-2">
                   <p
                     className="truncate text-sm font-medium text-slate-800"
                     title={listing.ipfs_hash}
@@ -164,7 +165,6 @@ export function ListingsPage() {
                     {truncateHash(listing.ipfs_hash)}
                   </p>
                   <CopyButton text={listing.ipfs_hash} />
-                </div>
               </div>
 
               <div className="mb-4">

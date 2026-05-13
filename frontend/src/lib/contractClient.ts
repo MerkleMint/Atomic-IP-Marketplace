@@ -1,5 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { USDC_DECIMALS } from "./types";
+import type { Listing as UiListing } from "./types";
 import {
   CONTRACT_ATOMIC_SWAP,
   CONTRACT_IP_REGISTRY,
@@ -459,7 +460,7 @@ async function simulateIpRegistryView(
 function decodeListingScVal(
   scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined,
   listingId: number
-) {
+): UiListing | null {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
   const native = StellarSdk.scValToNative(scVal);
@@ -479,6 +480,7 @@ function decodeListingScVal(
     royalty_bps: Number(native.royalty_bps ?? 0),
     royalty_recipient: String(native.royalty_recipient ?? ""),
     price_usdc: Number(native.price_usdc ?? 0),
+    pendingSwaps: [] as any[],
   };
 }
 
@@ -534,7 +536,21 @@ export async function hasPendingSwap(listingId: number) {
   const retval = await simulateView("has_pending_swap", [
     StellarSdk.nativeToScVal(listingId, { type: "u64" }),
   ]);
+  if (!retval) return false;
   return Boolean(StellarSdk.scValToNative(retval) ?? false);
+}
+
+export async function getDecryptionKey(swapId: number): Promise<string | null> {
+  const retval = await simulateView("get_decryption_key", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+  ]);
+  if (!retval) return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  if (native instanceof Uint8Array || Buffer.isBuffer(native)) {
+    return Buffer.from(native).toString("hex");
+  }
+  return native ? String(native) : null;
 }
 
 /**

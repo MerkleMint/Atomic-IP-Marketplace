@@ -51,24 +51,27 @@ export function useMyListings(ownerAddress: string | null) {
       }
 
       // Fetch listing details and all seller swaps in parallel
-      const [listingResults, swapResults] = await Promise.all([
+      const [listingResults, swapResults]: [
+        PromiseSettledResult<Listing | null>[],
+        PromiseSettledResult<any | null>[],
+      ] = await Promise.all([
         Promise.allSettled(listingIds.map((id) => getListing(id))),
         Promise.allSettled(sellerSwapIds.map((id) => getSwap(id))),
       ]);
 
       const loadedListings = listingResults
         .filter(
-          (r: PromiseFulfilledResult<Listing | null>) =>
+          (r): r is PromiseFulfilledResult<Listing> =>
             r.status === "fulfilled" && r.value !== null
         )
-        .map((r: PromiseFulfilledResult<Listing>) => r.value) as Listing[];
+        .map((r) => r.value);
 
       const allSellerSwaps = swapResults
         .filter(
-          (r: PromiseFulfilledResult<any>) =>
+          (r): r is PromiseFulfilledResult<any> =>
             r.status === "fulfilled" && r.value !== null
         )
-        .map((r: PromiseFulfilledResult<any>) => r.value)
+        .map((r) => r.value)
         .filter((s: any) => s.status === "Pending");
 
       // Attach pending swaps to their respective listing
@@ -90,7 +93,11 @@ export function useMyListings(ownerAddress: string | null) {
   useEffect(() => {
     fetchListings();
     timerRef.current = setInterval(fetchListings, POLL_INTERVAL_MS);
-    return () => clearInterval(timerRef.current);
+    return () => {
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+      }
+    };
   }, [fetchListings]);
 
   return {

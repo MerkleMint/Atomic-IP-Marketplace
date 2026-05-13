@@ -8,5 +8,5 @@ export interface Listing {
   royalty_bps: number;
   royalty_recipient: string;
   price_usdc: number;
-  pendingSwaps?: any[]; // Attached by useMyListings
+  pendingSwaps: any[]; // Attached by useMyListings
 }

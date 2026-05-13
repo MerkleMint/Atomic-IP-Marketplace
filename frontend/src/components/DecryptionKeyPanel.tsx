@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { getDecryptionKey, getListing } from "../lib/contractClient";
 import { fetchFromIpfs, decryptAesGcm } from "../lib/ipfs";
 import "./DecryptionKeyPanel.css";
