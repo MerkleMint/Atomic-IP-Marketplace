@@ -40,7 +40,12 @@ deploy_contract() {
 
 IP_REGISTRY=$(deploy_contract target/wasm32-unknown-unknown/release/ip_registry.wasm)
 ATOMIC_SWAP=$(deploy_contract target/wasm32-unknown-unknown/release/atomic_swap.wasm)
-ZK_VERIFIER=$(deploy_contract target/wasm32-unknown-unknown/release/zk_verifier.wasm)
+if [[ -n "${ATOMIC_SWAP_ZK_VERIFIER:-}" ]]; then
+  ZK_VERIFIER="$ATOMIC_SWAP_ZK_VERIFIER"
+  echo "Using existing zk_verifier contract: $ZK_VERIFIER"
+else
+  ZK_VERIFIER=$(deploy_contract target/wasm32-unknown-unknown/release/zk_verifier.wasm)
+fi
 
 echo "Initializing ip_registry contract..."
 if ! stellar contract invoke \

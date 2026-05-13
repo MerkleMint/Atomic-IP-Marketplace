@@ -52,6 +52,7 @@ cp .env.example .env
 | `ATOMIC_SWAP_FEE_RECIPIENT` | Address that receives protocol fees |
 | `ATOMIC_SWAP_FEE_BPS` | Fee in basis points (e.g. `250` = 2.5%) |
 | `ATOMIC_SWAP_CANCEL_DELAY_SECS` | Seconds before a buyer can cancel (e.g. `3600`) |
+| `ATOMIC_SWAP_ZK_VERIFIER` | Optional existing zk_verifier contract ID; if empty, `deploy_testnet.sh` deploys one and uses it |
 
 ### Build contracts
 
