@@ -8,6 +8,7 @@ use zk_verifier::{ProofNode, ZkVerifierClient};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 const DEFAULT_DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
+const MIN_DISPUTE_WINDOW_LEDGERS: u32 = 100;
 
 
 
@@ -49,6 +50,8 @@ pub enum ContractError {
     MissingConfirmationLedger = 22,
     /// Arithmetic overflow during fee calculation.
     Overflow = 23,
+    /// Dispute windows shorter than the protocol minimum are unsafe.
+    DisputeWindowTooShort = 25,
 }
 
 #[contracttype]
@@ -294,6 +297,9 @@ impl AtomicSwap {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
         admin.require_auth();
+        if ledgers < MIN_DISPUTE_WINDOW_LEDGERS {
+            panic_with_error!(&env, ContractError::DisputeWindowTooShort);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::DisputeWindowLedgers, &ledgers);
@@ -1129,6 +1135,26 @@ mod test {
         )
     }
 
+    #[test]
+    fn test_set_dispute_window_rejects_too_short_window() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _contract_id, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+
+        let result = client.try_set_dispute_window(&0u32);
+
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::DisputeWindowTooShort as u32
+            )))
+        );
+    }
+
     // ── price enforcement tests ───────────────────────────────────────────────
 
     #[test]
@@ -1258,8 +1284,8 @@ mod test {
             Some(SwapStatus::Completed)
         );
 
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
 
         assert_eq!(
@@ -1477,8 +1503,8 @@ mod test {
         );
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
 
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
 
         assert_eq!(usdc_client.balance(&seller), 9_750);
@@ -1525,8 +1551,8 @@ mod test {
         );
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
 
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
 
         assert_eq!(usdc_client.balance(&seller), 1000);
@@ -1607,8 +1633,8 @@ mod test {
             &40,
         );
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
 
         assert_eq!(usdc_client.balance(&seller), 39);
@@ -1956,11 +1982,11 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
-        client.set_dispute_window(&10u32);
+        client.set_dispute_window(&100u32);
         let swap_id = confirmed_swap(
             &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.raise_dispute(&swap_id);
     }
 
@@ -1974,8 +2000,8 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 1);
 
-        // Set a 10-ledger dispute window
-        client.set_dispute_window(&10u32);
+        // Set a 100-ledger dispute window
+        client.set_dispute_window(&100u32);
         let swap_id = confirmed_swap(
             &env, &client, listing_id, &buyer, &seller, &usdc_id, 500,
         );
@@ -2025,8 +2051,8 @@ mod test {
         client.add_allowed_token(&usdc_id);
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
 
         // Now clear mocked auths and attempt release as a third party — must fail.
         env.set_auths(&[]);
@@ -2073,7 +2099,7 @@ mod test {
         let fee_recipient = Address::generate(&env);
         let zk_id = env.register(ZkVerifier, ());
         // fee_bps = 200 (2%)
-        client.initialize(&admin, &200u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.initialize(&admin, &200u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
@@ -2372,13 +2398,13 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         // fee_bps = 200 (2%)
-        client.initialize(&Address::generate(&env), &200u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.initialize(&Address::generate(&env), &200u32, &fee_recipient, &60u64, &3600u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
 
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000);
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
 
         let usdc = token::Client::new(&env, &usdc_id);
@@ -2781,8 +2807,8 @@ mod test {
             &100,
         );
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
-        client.set_dispute_window(&10u32);
-        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.set_dispute_window(&100u32);
+        env.ledger().with_mut(|li| li.sequence_number += 101);
         client.release_to_seller(&swap_id);
         assert_eq!(usdc_client.balance(&fee_recipient), 1);
         assert_eq!(usdc_client.balance(&seller), 99);
@@ -3302,12 +3328,14 @@ mod test {
             assert_eq!(stored, new_admin);
         });
 
-        // Verify AdminTransferred event was emitted
-        let events = env.events().all();
-        let last = events.last().unwrap();
-        let transferred = AdminTransferred::try_from_val(&env, &last.2).unwrap();
-        assert_eq!(transferred.old_admin, admin);
-        assert_eq!(transferred.new_admin, new_admin);
+        let admin_val: soroban_sdk::Val = admin.into_val(&env);
+        let admin_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &admin_val).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("admin_transferred".try_into().unwrap());
+        let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 2 && body.topics[0] == name_xdr && body.topics[1] == admin_xdr
+        });
+        assert!(found, "AdminTransferred event not emitted");
     }
 
     #[test]
