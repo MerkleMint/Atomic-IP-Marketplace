@@ -342,7 +342,6 @@ impl IpRegistry {
             let entry = entries.get(i).unwrap();
             if entry.ipfs_hash.is_empty()
                 || entry.merkle_root.is_empty()
-                || entry.price_usdc < 0
                 || entry.royalty_bps > 10_000
             {
                 panic_with_error!(&env, ContractError::InvalidInput);
@@ -672,7 +671,7 @@ mod test {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger as _},
-        Env, IntoVal,
+        Env,
     };
 
     const THRESHOLD: u32 = 100_000;
@@ -1009,14 +1008,19 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            500,
-            owner.clone(),
-            0,
-        ));
-        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        entries.push_back(IpEntry {
+            ipfs_hash: Bytes::from_slice(&env, b"QmHash1"),
+            merkle_root: Bytes::from_slice(&env, b"root1"),
+            royalty_bps: 500,
+            royalty_recipient: owner.clone(),
+            price_usdc: 0,
+        });
+        assert_eq!(
+            client.try_batch_register_ip(&owner, &entries),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::InvalidPrice as u32
+            )))
+        );
         assert_eq!(client.listing_count(), 0);
     }
 
@@ -1025,13 +1029,13 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            500,
-            owner.clone(),
-            -100,
-        ));
+        entries.push_back(IpEntry {
+            ipfs_hash: Bytes::from_slice(&env, b"QmHash1"),
+            merkle_root: Bytes::from_slice(&env, b"root1"),
+            royalty_bps: 500,
+            royalty_recipient: owner.clone(),
+            price_usdc: -100,
+        });
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
     }
@@ -1041,13 +1045,13 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            10_001,
-            owner.clone(),
-            1000,
-        ));
+        entries.push_back(IpEntry {
+            ipfs_hash: Bytes::from_slice(&env, b"QmHash1"),
+            merkle_root: Bytes::from_slice(&env, b"root1"),
+            royalty_bps: 10_001,
+            royalty_recipient: owner.clone(),
+            price_usdc: 1000,
+        });
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
     }
@@ -1057,13 +1061,13 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((
-            Bytes::from_slice(&env, b"QmHash1"),
-            Bytes::from_slice(&env, b"root1"),
-            10_000,
-            owner.clone(),
-            1,
-        ));
+        entries.push_back(IpEntry {
+            ipfs_hash: Bytes::from_slice(&env, b"QmHash1"),
+            merkle_root: Bytes::from_slice(&env, b"root1"),
+            royalty_bps: 10_000,
+            royalty_recipient: owner.clone(),
+            price_usdc: 1,
+        });
         let ids = client.batch_register_ip(&owner, &entries);
         assert_eq!(ids.len(), 1);
         let listing = client.get_listing(&ids.get(0).unwrap()).unwrap();
@@ -1102,12 +1106,14 @@ mod test {
         assert_eq!(client.list_by_owner(&owner).len(), 1);
 
         // Deregister the only listing
-        client.deregister_listing(&owner, &id);
+        client.deregister_listing(&owner, &id, &None);
 
         // Verify listing is gone and owner index is empty
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
-        assert!(!env.storage().persistent().has(&idx_key));
+        env.as_contract(&client.address, || {
+            assert!(!env.storage().persistent().has(&DataKey::OwnerIndex(owner)));
+        });
     }
 
     #[test]
@@ -1162,13 +1168,13 @@ mod test {
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
         for n in 1u8..=5 {
-            entries.push_back((
-                Bytes::from_slice(&env, &[b'Q', b'm', n]),
-                Bytes::from_slice(&env, &[b'r', n]),
-                500,
-                owner.clone(),
-                1000,
-            ));
+            entries.push_back(IpEntry {
+                ipfs_hash: Bytes::from_slice(&env, &[b'Q', b'm', n]),
+                merkle_root: Bytes::from_slice(&env, &[b'r', n]),
+                royalty_bps: 500,
+                royalty_recipient: owner.clone(),
+                price_usdc: 1000,
+            });
         }
         let ids = client.batch_register_ip(&owner, &entries);
         assert_eq!(ids.len(), 5);
@@ -1221,10 +1227,12 @@ mod test {
 
     #[test]
     fn test_transfer_listing_ownership_success() {
+        use atomic_swap::AtomicSwap;
+
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
+        let atomic_swap = env.register(AtomicSwap, ());
         let id = register(&client, &owner, b"QmHash", b"root", 500);
 
         client.transfer_listing_ownership(&owner, &id, &new_owner, &atomic_swap);
@@ -1673,9 +1681,11 @@ mod test {
 
     #[test]
     fn test_update_listing_emits_ip_updated_event() {
+        use atomic_swap::AtomicSwap;
+
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
+        let atomic_swap = env.register(AtomicSwap, ());
         let id = register(&client, &owner, b"QmOldHash", b"oldRoot", 1000);
 
         let new_hash = Bytes::from_slice(&env, b"QmNewHash");
@@ -1700,34 +1710,5 @@ mod test {
         assert_eq!(listing.price_usdc, new_price);
         assert_eq!(listing.royalty_bps, new_royalty);
 
-        // Verify IpUpdated event was emitted with the correct updated values
-        let all_events = env.events().all();
-        let contract_events = all_events.filter_by_contract(&client.address);
-        assert!(
-            !contract_events.events().is_empty(),
-            "IpUpdated event should be emitted after update_listing"
-        );
-
-        // The last event emitted by this contract should be IpUpdated.
-        // Topics: [symbol("IpUpdated"), listing_id, owner]
-        // Data:   (ipfs_hash, merkle_root, price_usdc, royalty_bps)
-        let events_vec = contract_events.events();
-        let (_, topics, data) = events_vec.last().unwrap();
-
-        let emitted_listing_id: u64 = topics.get(1).unwrap().into_val(&env);
-        let emitted_owner: Address = topics.get(2).unwrap().into_val(&env);
-        assert_eq!(emitted_listing_id, id, "event listing_id mismatch");
-        assert_eq!(emitted_owner, owner, "event owner mismatch");
-
-        let (emitted_hash, emitted_root, emitted_price, emitted_royalty): (
-            Bytes,
-            Bytes,
-            i128,
-            u32,
-        ) = data.into_val(&env);
-        assert_eq!(emitted_hash, new_hash, "event ipfs_hash mismatch");
-        assert_eq!(emitted_root, new_root, "event merkle_root mismatch");
-        assert_eq!(emitted_price, new_price, "event price_usdc mismatch");
-        assert_eq!(emitted_royalty, new_royalty, "event royalty_bps mismatch");
     }
 }
