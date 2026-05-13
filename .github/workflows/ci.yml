@@ -30,7 +30,8 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-test-
 
       - name: Run tests
-        run: cargo test --workspace
+        # Keep CI pinned to Cargo.lock so dependency drift cannot pass unnoticed.
+        run: cargo test --locked --workspace
 
   lint:
     name: Clippy & Rustfmt
