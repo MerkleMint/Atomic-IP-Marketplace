@@ -4,6 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+NETWORK_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --network)
+      NETWORK_ARG="${2:?--network requires a value}"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--network testnet|mainnet|local]" >&2
+      exit 1
+      ;;
+  esac
+done
+
 if [[ -f .env ]]; then
   source .env
 elif [[ -f .env.example ]]; then
@@ -15,6 +30,9 @@ else
 fi
 
 : "${STELLAR_NETWORK:=testnet}"
+if [[ -n "$NETWORK_ARG" ]]; then
+  STELLAR_NETWORK="$NETWORK_ARG"
+fi
 : "${ATOMIC_SWAP_ADMIN:?ATOMIC_SWAP_ADMIN must be set in .env}"
 : "${ATOMIC_SWAP_FEE_BPS:=0}"
 : "${ATOMIC_SWAP_FEE_RECIPIENT:?ATOMIC_SWAP_FEE_RECIPIENT must be set in .env}"
@@ -23,7 +41,12 @@ fi
 : "${IP_REGISTRY_TTL_THRESHOLD:=100000}"
 : "${IP_REGISTRY_TTL_EXTEND_TO:=200000}"
 
-echo "Deploying to testnet..."
+if [[ "$STELLAR_NETWORK" == "mainnet" ]]; then
+  echo "WARNING: deploying to MAINNET."
+  echo "Confirm deployer is funded and mainnet fee, TTL, RPC, and admin settings are correct."
+fi
+
+echo "Deploying to $STELLAR_NETWORK..."
 
 deploy_contract() {
   local wasm_path="$1"

@@ -118,5 +118,5 @@ for contract in "${CONTRACTS[@]}"; do
     fi
 done
 echo ""
-echo "Deploy with: ./scripts/deploy_testnet.sh"
+echo "Deploy with: ./scripts/deploy.sh --network testnet"
 echo "================================================================"

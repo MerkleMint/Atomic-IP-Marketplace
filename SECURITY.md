@@ -21,7 +21,7 @@ Preferred reporting format:
 ## Scope
 This policy applies to:
 - Soroban contracts: `atomic_swap`, `ip_registry`, `zk_verifier`.
-- Deployment scripts (`deploy_testnet.sh`).
+- Deployment scripts (`deploy.sh`).
 - Related infrastructure under our control.
 
 ## Known Limitations

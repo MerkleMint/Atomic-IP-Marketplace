@@ -86,7 +86,7 @@ This runs `cargo test --locked --workspace` across all three contracts.
 3. Set `STELLAR_NETWORK=local` and `STELLAR_RPC_URL=http://localhost:8000/soroban/rpc` in `.env`.
 4. Deploy:
    ```bash
-   ./scripts/deploy_testnet.sh
+   ./scripts/deploy.sh --network local
    ```
 
 ### Frontend
@@ -112,9 +112,16 @@ Run tests:
 ./scripts/test.sh
 ```
 
-## Deploy (Testnet)
+## Deploy
 ```bash
-./scripts/deploy_testnet.sh
+./scripts/deploy.sh --network testnet
+```
+
+For mainnet, use a funded mainnet deployer account and review RPC, fee,
+TTL, admin, and verifier settings before confirming:
+
+```bash
+make deploy-mainnet
 ```
 
 ## Security
