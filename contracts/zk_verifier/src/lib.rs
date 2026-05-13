@@ -142,9 +142,16 @@ impl ZkVerifier {
 
     /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
     pub fn get_owner(env: Env, listing_id: u64) -> Option<Address> {
-        env.storage()
+        let key = DataKey::Owner(listing_id);
+        let result = env.storage()
             .persistent()
-            .get(&DataKey::Owner(listing_id))
+            .get(&key);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        result
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
@@ -283,6 +290,31 @@ mod test {
         client.set_merkle_root(&owner, &1u64, &root);
 
         assert_eq!(client.get_owner(&1u64), Some(owner));
+    }
+
+    #[test]
+    fn test_get_owner_extends_ttl_on_read() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"owner_ttl_root"))
+            .into();
+        client.set_merkle_root(&owner, &2u64, &root);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        assert_eq!(client.get_owner(&2u64), Some(owner.clone()));
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        assert_eq!(client.get_owner(&2u64), Some(owner));
     }
 
     #[test]
