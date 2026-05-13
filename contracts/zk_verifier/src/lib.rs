@@ -180,10 +180,6 @@ impl ZkVerifier {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
-        if (path.len() as u32) > MAX_PROOF_DEPTH {
-            soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
-        }
-
         let zero_sibling = BytesN::from_array(&env, &[0u8; 32]);
         let mut current: BytesN<32> = env.crypto().sha256(&leaf).into();
         for node in path.iter() {
@@ -463,6 +459,34 @@ mod test {
 
         let result = client.try_verify_partial_proof(&8u64, &leaf, &path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_partial_proof_accepts_max_depth_path() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"max-depth-leaf");
+        let mut current: BytesN<32> = env.crypto().sha256(&leaf).into();
+        let mut path: Vec<ProofNode> = Vec::new(&env);
+
+        for depth in 0..MAX_PROOF_DEPTH {
+            let sibling = BytesN::from_array(&env, &[(depth as u8) + 1; 32]);
+            let mut combined = Bytes::new(&env);
+            combined.extend_from_array(&current.to_array());
+            combined.extend_from_array(&sibling.to_array());
+            current = env.crypto().sha256(&combined).into();
+            path.push_back(ProofNode {
+                sibling,
+                is_left: false,
+            });
+        }
+
+        client.set_merkle_root(&owner, &9u64, &current);
+        assert!(client.verify_partial_proof(&9u64, &leaf, &path));
     }
 
     #[test]
