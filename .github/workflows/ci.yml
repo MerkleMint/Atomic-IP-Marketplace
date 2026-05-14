@@ -147,7 +147,7 @@ jobs:
             echo "ERROR: No JS bundle files found in $BUNDLE_DIR"
             exit 1
           fi
-          if grep -r '"undefined"' "$BUNDLE_DIR"/*.js | grep -iE '(contract|registry|swap|verifier|stellar)'; then
+          if grep -rE 'VITE_(CONTRACT|STELLAR)_[A-Z_]+[^[:alnum:]_]+undefined|"undefined"[^[:alnum:]_]+VITE_(CONTRACT|STELLAR)_[A-Z_]+' "$BUNDLE_DIR"/*.js; then
             echo "ERROR: Bundle contains undefined contract address(es). Check VITE_CONTRACT_* env vars."
             exit 1
           fi

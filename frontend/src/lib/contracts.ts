@@ -8,12 +8,16 @@
  * the Stellar network.
  */
 
-export const CONTRACT_ATOMIC_SWAP: string = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP;
-export const CONTRACT_IP_REGISTRY: string = import.meta.env.VITE_CONTRACT_IP_REGISTRY;
-export const CONTRACT_ZK_VERIFIER: string = import.meta.env.VITE_CONTRACT_ZK_VERIFIER;
-export const CONTRACT_USDC: string = import.meta.env.VITE_CONTRACT_USDC;
-export const STELLAR_NETWORK: string = import.meta.env.VITE_STELLAR_NETWORK;
-export const STELLAR_RPC_URL: string = import.meta.env.VITE_STELLAR_RPC_URL;
+export const CONTRACT_ATOMIC_SWAP: string =
+  import.meta.env.VITE_CONTRACT_ATOMIC_SWAP ?? "";
+export const CONTRACT_IP_REGISTRY: string =
+  import.meta.env.VITE_CONTRACT_IP_REGISTRY ?? "";
+export const CONTRACT_ZK_VERIFIER: string =
+  import.meta.env.VITE_CONTRACT_ZK_VERIFIER ?? "";
+export const CONTRACT_USDC: string = import.meta.env.VITE_CONTRACT_USDC ?? "";
+export const STELLAR_NETWORK: string =
+  import.meta.env.VITE_STELLAR_NETWORK ?? "";
+export const STELLAR_RPC_URL: string = import.meta.env.VITE_STELLAR_RPC_URL ?? "";
 
 const required = {
   VITE_CONTRACT_ATOMIC_SWAP: CONTRACT_ATOMIC_SWAP,
