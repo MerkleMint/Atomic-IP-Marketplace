@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
-    Bytes, BytesN, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
+    Env, Vec,
 };
 
 #[contracterror]
@@ -166,11 +166,11 @@ impl ZkVerifier {
             None => return false,
         };
 
-        if (path.len() as u32) > MAX_PROOF_DEPTH {
+        if path.len() > MAX_PROOF_DEPTH {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
-        if (path.len() as u32) > MAX_PROOF_DEPTH {
+        if path.len() > MAX_PROOF_DEPTH {
             soroban_sdk::panic_with_error!(&env, ContractError::ProofTooLong);
         }
 
