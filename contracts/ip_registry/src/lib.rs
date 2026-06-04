@@ -1,8 +1,11 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, Address, Bytes, Env, Vec,
+    contractclient, contracterror, contractevent, contracttype, panic_with_error, Address, Bytes,
+    Env, Vec,
 };
+
+#[cfg(feature = "contract")]
+use soroban_sdk::{contract, contractimpl};
 
 /// Entry for batch IP registration.
 #[contracttype]
@@ -29,13 +32,13 @@ pub enum ContractError {
     ContractPaused = 9,
 }
 
-/// Minimal interface to check for a pending swap on a listing.
+/// Minimal interface to check for a pending swap on a listing (for cross-contract calls).
 #[contractclient(name = "AtomicSwapClient")]
 pub trait AtomicSwapInterface {
     fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
 
-/// Client interface for IpRegistry — always compiled so dependents can use IpRegistryClient.
+/// Client interface for IpRegistry — only available in library mode to avoid duplication
 #[cfg(not(feature = "contract"))]
 #[contractclient(name = "IpRegistryClient")]
 pub trait IpRegistryInterface {
@@ -153,7 +156,8 @@ pub struct ContractUnpausedEvent {
     pub admin: Address,
 }
 
-#[cfg_attr(feature = "contract", contract)]
+#[cfg(feature = "contract")]
+#[contract]
 pub struct IpRegistry;
 
 fn get_config(env: &Env) -> Config {
@@ -180,7 +184,8 @@ fn assert_not_paused(env: &Env) {
     }
 }
 
-#[cfg_attr(feature = "contract", contractimpl)]
+#[cfg(feature = "contract")]
+#[contractimpl]
 impl IpRegistry {
     /// Must be called once before any other function.
     pub fn initialize(env: Env, admin: Address, ttl_threshold: u32, ttl_extend_to: u32) {

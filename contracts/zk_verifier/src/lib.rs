@@ -1,8 +1,10 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env, Vec,
+    contractclient, contracterror, contractevent, contracttype, Address, Bytes, BytesN, Env, Vec,
 };
+
+#[cfg(feature = "contract")]
+use soroban_sdk::{contract, contractimpl};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -55,7 +57,7 @@ pub struct RootOwnershipTransferred {
     pub to: Address,
 }
 
-/// Client interface for ZkVerifier — always compiled so dependents can use ZkVerifierClient.
+/// Client interface for ZkVerifier — only available in library mode to avoid duplication
 #[cfg(not(feature = "contract"))]
 #[contractclient(name = "ZkVerifierClient")]
 pub trait ZkVerifierInterface {
@@ -68,10 +70,12 @@ pub trait ZkVerifierInterface {
     fn verify_partial_proof(env: Env, listing_id: u64, leaf: Bytes, path: Vec<ProofNode>) -> bool;
 }
 
-#[cfg_attr(feature = "contract", contract)]
+#[cfg(feature = "contract")]
+#[contract]
 pub struct ZkVerifier;
 
-#[cfg_attr(feature = "contract", contractimpl)]
+#[cfg(feature = "contract")]
+#[contractimpl]
 impl ZkVerifier {
     /// Store the Merkle root for a listing. Only the listing owner can set or overwrite it.
     pub fn set_merkle_root(

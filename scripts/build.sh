@@ -58,7 +58,11 @@ build_contract() {
     fi
     
     echo "Building ${contract}..."
-    cargo build --target wasm32-unknown-unknown --release -p "${contract}"
+    if [ "$contract" == "ip_registry" ] || [ "$contract" == "zk_verifier" ]; then
+        cargo build --target wasm32-unknown-unknown --release -p "${contract}" --features contract
+    else
+        cargo build --target wasm32-unknown-unknown --release -p "${contract}"
+    fi
     echo "${contract} build complete."
     
     # Optimize the WASM artifact
@@ -88,7 +92,9 @@ fi
 # Build contracts
 if [ "$TARGET" == "all" ]; then
     echo "Building all contracts..."
-    cargo build --target wasm32-unknown-unknown --release
+    cargo build --target wasm32-unknown-unknown --release -p ip_registry --features contract
+    cargo build --target wasm32-unknown-unknown --release -p zk_verifier --features contract
+    cargo build --target wasm32-unknown-unknown --release -p atomic_swap
     echo "All contracts built successfully."
     
     # Optimize all WASM artifacts

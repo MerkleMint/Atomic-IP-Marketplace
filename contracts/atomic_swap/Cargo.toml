@@ -8,8 +8,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
-ip_registry = { path = "../ip_registry", default-features = false }
-zk_verifier = { path = "../zk_verifier", default-features = false }
+ip_registry = { path = "../ip_registry", features = [] }
+zk_verifier = { path = "../zk_verifier", features = [] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
