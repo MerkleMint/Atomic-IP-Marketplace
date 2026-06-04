@@ -25,16 +25,6 @@ pub struct ProofNode {
     pub is_left: bool,
 }
 
-
-
-
-
-
-
-
-
-
-
 #[contracttype]
 pub enum DataKey {
     MerkleRoot(u64),
@@ -133,18 +123,18 @@ impl ZkVerifier {
         let key = DataKey::MerkleRoot(listing_id);
         let result = env.storage().persistent().get(&key);
         if result.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
         }
         result
     }
 
     /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
     pub fn get_owner(env: Env, listing_id: u64) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Owner(listing_id))
+        env.storage().persistent().get(&DataKey::Owner(listing_id))
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
@@ -247,7 +237,7 @@ mod test {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger as _},
-        Bytes, Env, Vec, IntoVal,
+        Bytes, Env, IntoVal, Vec,
     };
 
     #[test]
@@ -406,7 +396,10 @@ mod test {
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
         let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
-        assert!(result.is_err(), "attacker should not be able to overwrite owner's root");
+        assert!(
+            result.is_err(),
+            "attacker should not be able to overwrite owner's root"
+        );
     }
 
     #[test]
@@ -491,317 +484,344 @@ mod test {
     #[test]
     fn test_transfer_root_ownership_emits_event() {
         let env = Env::default();
-    #[test]
-    fn test_transfer_root_ownership_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
+        #[test]
+        fn test_transfer_root_ownership_emits_event() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
 
-        let owner = Address::generate(&env);
-        let new_owner = Address::generate(&env);
-        let root: BytesN<32> = env
-            .crypto()
-            .sha256(&Bytes::from_slice(&env, b"leaf"))
-            .into();
-        client.set_merkle_root(&owner, &1u64, &root);
+            let owner = Address::generate(&env);
+            let new_owner = Address::generate(&env);
+            let root: BytesN<32> = env
+                .crypto()
+                .sha256(&Bytes::from_slice(&env, b"leaf"))
+                .into();
+            client.set_merkle_root(&owner, &1u64, &root);
 
-        client.transfer_root_ownership(&owner, &1u64, &new_owner);
+            client.transfer_root_ownership(&owner, &1u64, &new_owner);
 
-        // Basic check to confirm event emission
-        // Note: ContractEvents doesn't support .len() or .iter() in some older SDK versions
-        // but we assume it works here or we just check they aren't empty.
+            // Basic check to confirm event emission
+            // Note: ContractEvents doesn't support .len() or .iter() in some older SDK versions
+            // but we assume it works here or we just check they aren't empty.
+        }
+
+        #[test]
+        fn test_transfer_root_ownership_unauthorized() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let new_owner = Address::generate(&env);
+            let root: BytesN<32> = env
+                .crypto()
+                .sha256(&Bytes::from_slice(&env, b"leaf"))
+                .into();
+            client.set_merkle_root(&owner, &1u64, &root);
+
+            let result = client.try_transfer_root_ownership(&attacker, &1u64, &new_owner);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_transfer_root_ownership_root_not_found() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let new_owner = Address::generate(&env);
+
+            let result = client.try_transfer_root_ownership(&owner, &99u64, &new_owner);
+            assert!(result.is_err());
+        }
+
+        // ── SHA-256 proof tests ───────────────────────────────────────────────────
+
+        #[test]
+        fn test_two_leaf_proof() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            // Two-leaf tree: leaf_a = b"leaf_a", leaf_b = b"leaf_b"
+            // root = sha256(sha256(leaf_a) || sha256(leaf_b))
+            let leaf_a = Bytes::from_slice(&env, b"leaf_a");
+            let leaf_b = Bytes::from_slice(&env, b"leaf_b");
+            let hash_a: BytesN<32> = env.crypto().sha256(&leaf_a).into();
+            let hash_b: BytesN<32> = env.crypto().sha256(&leaf_b).into();
+            let mut combined = Bytes::new(&env);
+            combined.extend_from_array(&hash_a.to_array());
+            combined.extend_from_array(&hash_b.to_array());
+            let root: BytesN<32> = env.crypto().sha256(&combined).into();
+
+            client.set_merkle_root(&owner, &2u64, &root);
+
+            // Prove leaf_a: sibling is hash_b, is_left = false (sibling is right)
+            let mut path: Vec<ProofNode> = Vec::new(&env);
+            path.push_back(ProofNode {
+                sibling: hash_b,
+                is_left: false,
+            });
+            assert!(client.verify_partial_proof(&2u64, &leaf_a, &path));
+        }
+
+        #[test]
+        fn test_tampered_leaf_fails_proof() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let real_leaf = Bytes::from_slice(&env, b"real_leaf");
+            let sibling = Bytes::from_slice(&env, b"sibling");
+            let hash_real: BytesN<32> = env.crypto().sha256(&real_leaf).into();
+            let hash_sib: BytesN<32> = env.crypto().sha256(&sibling).into();
+            let mut combined = Bytes::new(&env);
+            combined.extend_from_array(&hash_real.to_array());
+            combined.extend_from_array(&hash_sib.to_array());
+            let root: BytesN<32> = env.crypto().sha256(&combined).into();
+
+            client.set_merkle_root(&owner, &4u64, &root);
+
+            let tampered = Bytes::from_slice(&env, b"tampered_leaf");
+            let mut path: Vec<ProofNode> = Vec::new(&env);
+            path.push_back(ProofNode {
+                sibling: hash_sib,
+                is_left: false,
+            });
+            assert!(!client.verify_partial_proof(&4u64, &tampered, &path));
+        }
+
+        #[test]
+        fn test_is_left_ordering_correctness() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            // leaf is the RIGHT child; sibling is LEFT
+            // root = sha256(hash_sib || hash_leaf)
+            let leaf = Bytes::from_slice(&env, b"right_leaf");
+            let sibling_bytes = Bytes::from_slice(&env, b"left_sibling");
+            let hash_leaf: BytesN<32> = env.crypto().sha256(&leaf).into();
+            let hash_sib: BytesN<32> = env.crypto().sha256(&sibling_bytes).into();
+            let mut combined = Bytes::new(&env);
+            combined.extend_from_array(&hash_sib.to_array());
+            combined.extend_from_array(&hash_leaf.to_array());
+            let root: BytesN<32> = env.crypto().sha256(&combined).into();
+
+            client.set_merkle_root(&owner, &5u64, &root);
+
+            // is_left = true means sibling is on the left
+            let mut path: Vec<ProofNode> = Vec::new(&env);
+            path.push_back(ProofNode {
+                sibling: hash_sib.clone(),
+                is_left: true,
+            });
+            assert!(client.verify_partial_proof(&5u64, &leaf, &path));
+
+            // Wrong ordering should fail
+            let mut wrong_path: Vec<ProofNode> = Vec::new(&env);
+            wrong_path.push_back(ProofNode {
+                sibling: hash_sib,
+                is_left: false,
+            });
+            assert!(!client.verify_partial_proof(&5u64, &leaf, &wrong_path));
+        }
+
+        #[test]
+        fn test_invalid_proof_wrong_sibling() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let leaf = Bytes::from_slice(&env, b"leaf");
+            let real_sibling = Bytes::from_slice(&env, b"real_sibling");
+            let hash_leaf: BytesN<32> = env.crypto().sha256(&leaf).into();
+            let hash_real_sib: BytesN<32> = env.crypto().sha256(&real_sibling).into();
+            let mut combined = Bytes::new(&env);
+            combined.extend_from_array(&hash_leaf.to_array());
+            combined.extend_from_array(&hash_real_sib.to_array());
+            let root: BytesN<32> = env.crypto().sha256(&combined).into();
+
+            client.set_merkle_root(&owner, &3u64, &root);
+
+            // Submit a wrong sibling
+            let wrong_sibling = Bytes::from_slice(&env, b"wrong_sibling");
+            let hash_wrong_sib: BytesN<32> = env.crypto().sha256(&wrong_sibling).into();
+            let mut path: Vec<ProofNode> = Vec::new(&env);
+            path.push_back(ProofNode {
+                sibling: hash_wrong_sib,
+                is_left: false,
+            });
+            assert!(!client.verify_partial_proof(&3u64, &leaf, &path));
+        }
+
+        #[test]
+        fn test_two_level_merkle_proof() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            // 4-leaf tree: [a, b, c, d]
+            // level1: ab = sha256(h_a||h_b), cd = sha256(h_c||h_d)
+            // root:   sha256(ab||cd)
+            // Prove leaf_a with path: [sibling=h_b (right), sibling=cd (right)]
+            let leaf_a = Bytes::from_slice(&env, b"leaf_a");
+            let leaf_b = Bytes::from_slice(&env, b"leaf_b");
+            let leaf_c = Bytes::from_slice(&env, b"leaf_c");
+            let leaf_d = Bytes::from_slice(&env, b"leaf_d");
+            let h_a: BytesN<32> = env.crypto().sha256(&leaf_a).into();
+            let h_b: BytesN<32> = env.crypto().sha256(&leaf_b).into();
+            let h_c: BytesN<32> = env.crypto().sha256(&leaf_c).into();
+            let h_d: BytesN<32> = env.crypto().sha256(&leaf_d).into();
+
+            let mut ab_bytes = Bytes::new(&env);
+            ab_bytes.extend_from_array(&h_a.to_array());
+            ab_bytes.extend_from_array(&h_b.to_array());
+            let ab: BytesN<32> = env.crypto().sha256(&ab_bytes).into();
+
+            let mut cd_bytes = Bytes::new(&env);
+            cd_bytes.extend_from_array(&h_c.to_array());
+            cd_bytes.extend_from_array(&h_d.to_array());
+            let cd: BytesN<32> = env.crypto().sha256(&cd_bytes).into();
+
+            let mut root_bytes = Bytes::new(&env);
+            root_bytes.extend_from_array(&ab.to_array());
+            root_bytes.extend_from_array(&cd.to_array());
+            let root: BytesN<32> = env.crypto().sha256(&root_bytes).into();
+
+            client.set_merkle_root(&owner, &10u64, &root);
+
+            let mut path: Vec<ProofNode> = Vec::new(&env);
+            path.push_back(ProofNode {
+                sibling: h_b,
+                is_left: false,
+            });
+            path.push_back(ProofNode {
+                sibling: cd,
+                is_left: false,
+            });
+            assert!(client.verify_partial_proof(&10u64, &leaf_a, &path));
+        }
+
+        #[test]
+        fn test_verify_partial_proof_emits_event() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let leaf = Bytes::from_slice(&env, b"event_leaf");
+            let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+            client.set_merkle_root(&owner, &1u64, &root);
+
+            let path: Vec<ProofNode> = Vec::new(&env);
+            let result = client.verify_partial_proof(&1u64, &leaf, &path);
+            assert!(result);
+
+            // At least one event should have been emitted (proof_verified)
+            assert!(
+                !env.events().all().events().is_empty(),
+                "proof_verified event not emitted"
+            );
+        }
+
+        #[test]
+        fn test_set_merkle_root_emits_event() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let leaf = Bytes::from_slice(&env, b"event_leaf");
+            let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+            client.set_merkle_root(&owner, &1u64, &root);
+
+            // At least one event should have been emitted (merkle_root_set)
+            assert!(
+                !env.events().all().events().is_empty(),
+                "merkle_root_set event not emitted"
+            );
+        }
+
+        #[test]
+        fn test_proof_exists_returns_false_when_no_root_set() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            assert_eq!(client.get_merkle_root(&1u64), None);
+            let leaf = Bytes::from_slice(&env, b"leaf");
+            let path: Vec<ProofNode> = Vec::new(&env);
+            assert!(!client.verify_partial_proof(&1u64, &leaf, &path));
+        }
+
+        #[test]
+        fn test_proof_exists_returns_true_after_set_merkle_root() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let leaf = Bytes::from_slice(&env, b"leaf");
+            let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+            client.set_merkle_root(&owner, &1u64, &root);
+
+            assert!(client.get_merkle_root(&1u64).is_some());
+            let path: Vec<ProofNode> = Vec::new(&env);
+            assert!(client.verify_partial_proof(&1u64, &leaf, &path));
+        }
+
+        #[test]
+        fn test_proof_exists_is_isolated_per_listing() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let leaf = Bytes::from_slice(&env, b"leaf");
+            let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+            client.set_merkle_root(&owner, &1u64, &root);
+
+            // listing 2 has no root — proof should return false
+            let path: Vec<ProofNode> = Vec::new(&env);
+            assert!(!client.verify_partial_proof(&2u64, &leaf, &path));
+        }
+
+        #[test]
+        fn test_set_merkle_root_rejects_zero_root() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ZkVerifier, ());
+            let client = ZkVerifierClient::new(&env, &contract_id);
+
+            let owner = Address::generate(&env);
+            let zero_root: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+            let result = client.try_set_merkle_root(&owner, &1u64, &zero_root);
+            assert_eq!(
+                result.unwrap_err().unwrap(),
+                ContractError::InvalidRoot,
+                "zero root must be rejected"
+            );
+        }
     }
-
-    #[test]
-    fn test_transfer_root_ownership_unauthorized() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let new_owner = Address::generate(&env);
-        let root: BytesN<32> = env
-            .crypto()
-            .sha256(&Bytes::from_slice(&env, b"leaf"))
-            .into();
-        client.set_merkle_root(&owner, &1u64, &root);
-
-        let result = client.try_transfer_root_ownership(&attacker, &1u64, &new_owner);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transfer_root_ownership_root_not_found() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let new_owner = Address::generate(&env);
-
-        let result = client.try_transfer_root_ownership(&owner, &99u64, &new_owner);
-        assert!(result.is_err());
-    }
-
-    // ── SHA-256 proof tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_two_leaf_proof() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        // Two-leaf tree: leaf_a = b"leaf_a", leaf_b = b"leaf_b"
-        // root = sha256(sha256(leaf_a) || sha256(leaf_b))
-        let leaf_a = Bytes::from_slice(&env, b"leaf_a");
-        let leaf_b = Bytes::from_slice(&env, b"leaf_b");
-        let hash_a: BytesN<32> = env.crypto().sha256(&leaf_a).into();
-        let hash_b: BytesN<32> = env.crypto().sha256(&leaf_b).into();
-        let mut combined = Bytes::new(&env);
-        combined.extend_from_array(&hash_a.to_array());
-        combined.extend_from_array(&hash_b.to_array());
-        let root: BytesN<32> = env.crypto().sha256(&combined).into();
-
-        client.set_merkle_root(&owner, &2u64, &root);
-
-        // Prove leaf_a: sibling is hash_b, is_left = false (sibling is right)
-        let mut path: Vec<ProofNode> = Vec::new(&env);
-        path.push_back(ProofNode { sibling: hash_b, is_left: false });
-        assert!(client.verify_partial_proof(&2u64, &leaf_a, &path));
-    }
-
-    #[test]
-    fn test_tampered_leaf_fails_proof() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let real_leaf = Bytes::from_slice(&env, b"real_leaf");
-        let sibling = Bytes::from_slice(&env, b"sibling");
-        let hash_real: BytesN<32> = env.crypto().sha256(&real_leaf).into();
-        let hash_sib: BytesN<32> = env.crypto().sha256(&sibling).into();
-        let mut combined = Bytes::new(&env);
-        combined.extend_from_array(&hash_real.to_array());
-        combined.extend_from_array(&hash_sib.to_array());
-        let root: BytesN<32> = env.crypto().sha256(&combined).into();
-
-        client.set_merkle_root(&owner, &4u64, &root);
-
-        let tampered = Bytes::from_slice(&env, b"tampered_leaf");
-        let mut path: Vec<ProofNode> = Vec::new(&env);
-        path.push_back(ProofNode { sibling: hash_sib, is_left: false });
-        assert!(!client.verify_partial_proof(&4u64, &tampered, &path));
-    }
-
-    #[test]
-    fn test_is_left_ordering_correctness() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        // leaf is the RIGHT child; sibling is LEFT
-        // root = sha256(hash_sib || hash_leaf)
-        let leaf = Bytes::from_slice(&env, b"right_leaf");
-        let sibling_bytes = Bytes::from_slice(&env, b"left_sibling");
-        let hash_leaf: BytesN<32> = env.crypto().sha256(&leaf).into();
-        let hash_sib: BytesN<32> = env.crypto().sha256(&sibling_bytes).into();
-        let mut combined = Bytes::new(&env);
-        combined.extend_from_array(&hash_sib.to_array());
-        combined.extend_from_array(&hash_leaf.to_array());
-        let root: BytesN<32> = env.crypto().sha256(&combined).into();
-
-        client.set_merkle_root(&owner, &5u64, &root);
-
-        // is_left = true means sibling is on the left
-        let mut path: Vec<ProofNode> = Vec::new(&env);
-        path.push_back(ProofNode { sibling: hash_sib.clone(), is_left: true });
-        assert!(client.verify_partial_proof(&5u64, &leaf, &path));
-
-        // Wrong ordering should fail
-        let mut wrong_path: Vec<ProofNode> = Vec::new(&env);
-        wrong_path.push_back(ProofNode { sibling: hash_sib, is_left: false });
-        assert!(!client.verify_partial_proof(&5u64, &leaf, &wrong_path));
-    }
-
-    #[test]
-    fn test_invalid_proof_wrong_sibling() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"leaf");
-        let real_sibling = Bytes::from_slice(&env, b"real_sibling");
-        let hash_leaf: BytesN<32> = env.crypto().sha256(&leaf).into();
-        let hash_real_sib: BytesN<32> = env.crypto().sha256(&real_sibling).into();
-        let mut combined = Bytes::new(&env);
-        combined.extend_from_array(&hash_leaf.to_array());
-        combined.extend_from_array(&hash_real_sib.to_array());
-        let root: BytesN<32> = env.crypto().sha256(&combined).into();
-
-        client.set_merkle_root(&owner, &3u64, &root);
-
-        // Submit a wrong sibling
-        let wrong_sibling = Bytes::from_slice(&env, b"wrong_sibling");
-        let hash_wrong_sib: BytesN<32> = env.crypto().sha256(&wrong_sibling).into();
-        let mut path: Vec<ProofNode> = Vec::new(&env);
-        path.push_back(ProofNode { sibling: hash_wrong_sib, is_left: false });
-        assert!(!client.verify_partial_proof(&3u64, &leaf, &path));
-    }
-
-    #[test]
-    fn test_two_level_merkle_proof() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        // 4-leaf tree: [a, b, c, d]
-        // level1: ab = sha256(h_a||h_b), cd = sha256(h_c||h_d)
-        // root:   sha256(ab||cd)
-        // Prove leaf_a with path: [sibling=h_b (right), sibling=cd (right)]
-        let leaf_a = Bytes::from_slice(&env, b"leaf_a");
-        let leaf_b = Bytes::from_slice(&env, b"leaf_b");
-        let leaf_c = Bytes::from_slice(&env, b"leaf_c");
-        let leaf_d = Bytes::from_slice(&env, b"leaf_d");
-        let h_a: BytesN<32> = env.crypto().sha256(&leaf_a).into();
-        let h_b: BytesN<32> = env.crypto().sha256(&leaf_b).into();
-        let h_c: BytesN<32> = env.crypto().sha256(&leaf_c).into();
-        let h_d: BytesN<32> = env.crypto().sha256(&leaf_d).into();
-
-        let mut ab_bytes = Bytes::new(&env);
-        ab_bytes.extend_from_array(&h_a.to_array());
-        ab_bytes.extend_from_array(&h_b.to_array());
-        let ab: BytesN<32> = env.crypto().sha256(&ab_bytes).into();
-
-        let mut cd_bytes = Bytes::new(&env);
-        cd_bytes.extend_from_array(&h_c.to_array());
-        cd_bytes.extend_from_array(&h_d.to_array());
-        let cd: BytesN<32> = env.crypto().sha256(&cd_bytes).into();
-
-        let mut root_bytes = Bytes::new(&env);
-        root_bytes.extend_from_array(&ab.to_array());
-        root_bytes.extend_from_array(&cd.to_array());
-        let root: BytesN<32> = env.crypto().sha256(&root_bytes).into();
-
-        client.set_merkle_root(&owner, &10u64, &root);
-
-        let mut path: Vec<ProofNode> = Vec::new(&env);
-        path.push_back(ProofNode { sibling: h_b, is_left: false });
-        path.push_back(ProofNode { sibling: cd, is_left: false });
-        assert!(client.verify_partial_proof(&10u64, &leaf_a, &path));
-    }
-
-    #[test]
-    fn test_verify_partial_proof_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"event_leaf");
-        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
-        client.set_merkle_root(&owner, &1u64, &root);
-
-        let path: Vec<ProofNode> = Vec::new(&env);
-        let result = client.verify_partial_proof(&1u64, &leaf, &path);
-        assert!(result);
-
-        // At least one event should have been emitted (proof_verified)
-        assert!(!env.events().all().events().is_empty(), "proof_verified event not emitted");
-    }
-
-    #[test]
-    fn test_set_merkle_root_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"event_leaf");
-        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
-        client.set_merkle_root(&owner, &1u64, &root);
-
-        // At least one event should have been emitted (merkle_root_set)
-        assert!(!env.events().all().events().is_empty(), "merkle_root_set event not emitted");
-    }
-
-    #[test]
-    fn test_proof_exists_returns_false_when_no_root_set() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        assert_eq!(client.get_merkle_root(&1u64), None);
-        let leaf = Bytes::from_slice(&env, b"leaf");
-        let path: Vec<ProofNode> = Vec::new(&env);
-        assert!(!client.verify_partial_proof(&1u64, &leaf, &path));
-    }
-
-    #[test]
-    fn test_proof_exists_returns_true_after_set_merkle_root() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"leaf");
-        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
-        client.set_merkle_root(&owner, &1u64, &root);
-
-        assert!(client.get_merkle_root(&1u64).is_some());
-        let path: Vec<ProofNode> = Vec::new(&env);
-        assert!(client.verify_partial_proof(&1u64, &leaf, &path));
-    }
-
-    #[test]
-    fn test_proof_exists_is_isolated_per_listing() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let leaf = Bytes::from_slice(&env, b"leaf");
-        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
-        client.set_merkle_root(&owner, &1u64, &root);
-
-        // listing 2 has no root — proof should return false
-        let path: Vec<ProofNode> = Vec::new(&env);
-        assert!(!client.verify_partial_proof(&2u64, &leaf, &path));
-    }
-
-    #[test]
-    fn test_set_merkle_root_rejects_zero_root() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ZkVerifier, ());
-        let client = ZkVerifierClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let zero_root: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
-        let result = client.try_set_merkle_root(&owner, &1u64, &zero_root);
-        assert_eq!(
-            result.unwrap_err().unwrap(),
-            ContractError::InvalidRoot,
-            "zero root must be rejected"
-        );
-    }
-}
 }
