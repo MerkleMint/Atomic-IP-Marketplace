@@ -13,7 +13,7 @@ interface IListingCard {
     id: number;
     ipfs_hash: string;
     price_usdc: number;
-    pendingSwaps: any[];
+    pendingSwaps?: any[];
   };
   wallet: {
     walletId: string;
@@ -165,16 +165,16 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         )}
       </div>
 
-      {listing.pendingSwaps.length === 0 ? (
+      {(listing.pendingSwaps?.length ?? 0) === 0 ? (
         <p className="lc__no-swaps">No pending swaps</p>
       ) : (
         <div className="lc__swaps">
           <span className="lc__swaps-label">
             Pending swaps
-            <span className="lc__badge">{listing.pendingSwaps.length}</span>
+            <span className="lc__badge">{listing.pendingSwaps?.length}</span>
           </span>
           <ul className="lc__swaps-list">
-            {listing.pendingSwaps.map((swap) => (
+            {listing.pendingSwaps?.map((swap) => (
               <li key={swap.id} className="lc__swap-item">
                 <ConfirmSwapForm
                   swap={swap}

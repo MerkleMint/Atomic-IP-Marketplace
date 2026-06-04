@@ -4,7 +4,6 @@ import type { ProofNode } from "../lib/contractClient";
 import type { Wallet } from "../lib/walletKit";
 import type { Swap } from "../hooks/useMySwaps";
 import "./ConfirmSwapForm.css";
-import { CopyButton } from "./CopyButton";
 
 const USDC_DECIMALS = 7;
 

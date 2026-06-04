@@ -4,7 +4,6 @@ import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
 import { RegisterListingForm } from "./RegisterListingForm";
 import { useWallet } from "../context/WalletContext";
-import type { Listing, Wallet } from "../lib/types";
 import "./MyListingsDashboard.css";
 
 /**
@@ -35,8 +34,8 @@ export function MyListingsDashboard() {
     );
   }
 
-  const withPending = listings.filter((l) => l.pendingSwaps.length > 0);
-  const withoutPending = listings.filter((l) => l.pendingSwaps.length === 0);
+  const withPending = listings.filter((l) => (l.pendingSwaps?.length ?? 0) > 0);
+  const withoutPending = listings.filter((l) => (l.pendingSwaps?.length ?? 0) === 0);
 
   return (
     <section className="mld" aria-label="My Listings Dashboard">

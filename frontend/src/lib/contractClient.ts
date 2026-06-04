@@ -534,7 +534,7 @@ export async function hasPendingSwap(listingId: number) {
   const retval = await simulateView("has_pending_swap", [
     StellarSdk.nativeToScVal(listingId, { type: "u64" }),
   ]);
-  return Boolean(StellarSdk.scValToNative(retval) ?? false);
+  return Boolean(retval && StellarSdk.scValToNative(retval)) ?? false;
 }
 
 /**

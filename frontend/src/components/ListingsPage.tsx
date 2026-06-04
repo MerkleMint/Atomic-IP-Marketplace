@@ -50,14 +50,9 @@ async function fetchListings(): Promise<ListingWithStatus[]> {
   );
 
   return settledListings
-    .filter(
-      (
-        result
-      ): result is PromiseFulfilledResult<Listing | null> =>
-        result.status === "fulfilled"
-    )
-    .map((result) => result.value)
-    .filter((listing): listing is Listing => listing !== null);
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => (result as PromiseFulfilledResult<ListingWithStatus | null>).value)
+    .filter((listing): listing is ListingWithStatus => listing !== null);
 }
 
 export function ListingsPage() {
@@ -157,14 +152,16 @@ export function ListingsPage() {
                   <CopyButton text={listing.id.toString()} />
                 </div>
                 <span>{listing.price_usdc / Math.pow(10, 7)} USDC</span>
-                  <p
-                    className="truncate text-sm font-medium text-slate-800"
-                    title={listing.ipfs_hash}
-                  >
-                    {truncateHash(listing.ipfs_hash)}
-                  </p>
-                  <CopyButton text={listing.ipfs_hash} />
-                </div>
+              </div>
+
+              <div className="mb-2">
+                <p
+                  className="truncate text-sm font-medium text-slate-800"
+                  title={listing.ipfs_hash}
+                >
+                  {truncateHash(listing.ipfs_hash)}
+                </p>
+                <CopyButton text={listing.ipfs_hash} />
               </div>
 
               <div className="mb-4">

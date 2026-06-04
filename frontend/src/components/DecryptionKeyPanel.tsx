@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from "react";
-import { getDecryptionKey, getListing } from "../lib/contractClient";
+import { useState, useCallback } from "react";
+import { getListing } from "../lib/contractClient";
 import { fetchFromIpfs, decryptAesGcm } from "../lib/ipfs";
 import "./DecryptionKeyPanel.css";
 
@@ -25,11 +25,12 @@ export function DecryptionKeyPanel({ swapId, listingId, cachedKey }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const result = await getDecryptionKey(swapId);
-      if (!result) {
-        setError("Decryption key not found on-chain for this swap.");
+      // Key is retrieved from the Swap struct after confirm_swap
+      // No separate on-chain fetch needed when cachedKey is populated
+      if (cachedKey) {
+        setKey(cachedKey);
       } else {
-        setKey(result);
+        setError("Decryption key not available yet.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to retrieve decryption key.");
