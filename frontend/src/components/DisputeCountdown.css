@@ -1,0 +1,126 @@
+.dispute-countdown {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background-color: hsl(38, 100%, 95%);
+  border: 1px solid hsl(38, 92%, 60%);
+  font-size: 0.875rem;
+}
+
+.dispute-countdown__label {
+  font-weight: 500;
+  color: hsl(38, 92%, 35%);
+}
+
+.dispute-countdown__time {
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
+    "Courier New", monospace;
+  font-weight: 600;
+  color: hsl(38, 92%, 25%);
+}
+
+.dispute-countdown__warning {
+  font-size: 1rem;
+  animation: warningPulse 1s ease-in-out infinite;
+}
+
+@keyframes warningPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Urgent state: less than 1 hour */
+.dispute-countdown--urgent {
+  background-color: hsl(30, 100%, 90%);
+  border-color: hsl(30, 100%, 50%);
+  color: hsl(30, 100%, 30%);
+}
+
+.dispute-countdown--urgent .dispute-countdown__label {
+  color: hsl(30, 100%, 30%);
+}
+
+.dispute-countdown--urgent .dispute-countdown__time {
+  color: hsl(30, 100%, 20%);
+}
+
+/* Critical state: less than 10 minutes */
+.dispute-countdown--critical {
+  background-color: hsl(0, 84%, 90%);
+  border-color: hsl(0, 84%, 50%);
+  animation: criticalPulse 0.8s ease-in-out infinite;
+}
+
+.dispute-countdown--critical .dispute-countdown__label {
+  color: hsl(0, 84%, 30%);
+}
+
+.dispute-countdown--critical .dispute-countdown__time {
+  color: hsl(0, 84%, 20%);
+}
+
+@keyframes criticalPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0);
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .dispute-countdown {
+    background-color: hsl(38, 92%, 15%);
+    border-color: hsl(38, 92%, 40%);
+    color: hsl(38, 100%, 75%);
+  }
+
+  .dispute-countdown__label {
+    color: hsl(38, 100%, 70%);
+  }
+
+  .dispute-countdown__time {
+    color: hsl(38, 100%, 80%);
+  }
+
+  .dispute-countdown--urgent {
+    background-color: hsl(30, 100%, 15%);
+    border-color: hsl(30, 100%, 40%);
+  }
+
+  .dispute-countdown--urgent .dispute-countdown__label {
+    color: hsl(30, 100%, 70%);
+  }
+
+  .dispute-countdown--urgent .dispute-countdown__time {
+    color: hsl(30, 100%, 80%);
+  }
+
+  .dispute-countdown--critical {
+    background-color: hsl(0, 84%, 15%);
+    border-color: hsl(0, 84%, 40%);
+  }
+
+  .dispute-countdown--critical .dispute-countdown__label {
+    color: hsl(0, 84%, 75%);
+  }
+
+  .dispute-countdown--critical .dispute-countdown__time {
+    color: hsl(0, 84%, 85%);
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .dispute-countdown__warning,
+  .dispute-countdown--critical {
+    animation: none;
+  }
+}

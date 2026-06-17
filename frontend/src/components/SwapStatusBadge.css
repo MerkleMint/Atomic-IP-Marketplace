@@ -1,0 +1,113 @@
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.status-badge__icon {
+  display: inline-flex;
+  font-size: 1rem;
+}
+
+.status-badge__label {
+  position: relative;
+  z-index: 1;
+}
+
+.status-badge__progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background-color: currentColor;
+  opacity: 0.3;
+  transition: width 0.3s ease-in-out;
+  animation: confirmationPulse 0.8s ease-in-out infinite;
+}
+
+@keyframes confirmationPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+/* Status variants */
+.status-badge--pending {
+  background-color: hsl(38, 100%, 90%);
+  color: hsl(38, 92%, 35%);
+  border: 1px solid hsl(38, 92%, 50%);
+}
+
+.status-badge--completed {
+  background-color: hsl(142, 71%, 90%);
+  color: hsl(142, 66%, 30%);
+  border: 1px solid hsl(142, 66%, 45%);
+}
+
+.status-badge--cancelled {
+  background-color: hsl(0, 84%, 90%);
+  color: hsl(0, 84%, 35%);
+  border: 1px solid hsl(0, 84%, 50%);
+}
+
+.status-badge--disputed {
+  background-color: hsl(0, 100%, 90%);
+  color: hsl(0, 100%, 30%);
+  border: 1px solid hsl(0, 84%, 50%);
+  animation: disputeWarning 1s ease-in-out infinite;
+}
+
+@keyframes disputeWarning {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .status-badge--pending {
+    background-color: hsl(38, 92%, 20%);
+    color: hsl(38, 100%, 75%);
+    border-color: hsl(38, 100%, 50%);
+  }
+
+  .status-badge--completed {
+    background-color: hsl(142, 66%, 20%);
+    color: hsl(142, 71%, 75%);
+    border-color: hsl(142, 71%, 45%);
+  }
+
+  .status-badge--cancelled {
+    background-color: hsl(0, 84%, 20%);
+    color: hsl(0, 84%, 75%);
+    border-color: hsl(0, 84%, 45%);
+  }
+
+  .status-badge--disputed {
+    background-color: hsl(0, 100%, 20%);
+    color: hsl(0, 100%, 75%);
+    border-color: hsl(0, 100%, 45%);
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: more) {
+  .status-badge {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .status-badge__progress {
+    animation: none;
+  }
+
+  .status-badge--disputed {
+    animation: none;
+  }
+}
