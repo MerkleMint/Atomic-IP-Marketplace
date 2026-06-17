@@ -13,4 +13,5 @@ zk_verifier = { path = "../zk_verifier", features = [] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-ip_registry = { path = "../ip_registry" }
+ip_registry = { path = "../ip_registry", features = ["contract"] }
+zk_verifier = { path = "../zk_verifier", features = ["contract"] }

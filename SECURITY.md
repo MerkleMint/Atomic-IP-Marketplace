@@ -31,6 +31,37 @@ This policy applies to:
 - **USDC Handling**: Atomic swaps handle real USDC; users bear custody risks.
 - **Dependencies**: Relies on Soroban SDK v22.0.0; upstream vulns possible.
 
+## Validation Checks (atomic_swap)
+
+The following checks are enforced in the `atomic_swap` contract:
+
+| Check | Error Code | Where |
+|---|---|---|
+| Token allowance must be ≥ `usdc_amount` before transfer | `InsufficientAllowance` (#24) | `initiate_swap` |
+| Only tokens added via `add_allowed_token` are accepted | `InvalidToken` (#20) | `initiate_swap` |
+| Buyer's payment must be ≥ `listing.price_usdc` | `UnderpaymentNotAllowed` (#14) | `initiate_swap` |
+| Fee basis points must not exceed 10 000 (100%) | `FeeBpsTooHigh` (#21) | `initialize`, `update_config` |
+| ZK Merkle proof must pass verifier | `InvalidProof` (#16) | `confirm_swap` |
+| Cancel only after `cancel_delay_secs` elapses | `CancelTooEarly` (#18) | `cancel_swap` |
+| Release only after dispute window expires | `DisputeWindowActive` (#19) | `release_to_seller` |
+| Seller address must match listing owner | `SellerMismatch` (#9) | `initiate_swap` |
+| Arithmetic overflow is detected on fee calculation | `Overflow` (#23) | `initiate_swap` |
+| Fee truncation to zero is rejected | `FeeWouldTruncate` (#15) | `initiate_swap` |
+
+### Error Recovery
+
+Errors are classified into recovery categories via `SwapRecoveryKind`:
+- **Validation** — pre-transfer; no funds moved; safe to retry after fixing inputs.
+- **ProofVerification** — ZK proof rejected; swap stays Pending; seller must resubmit.
+- **StateRollback** — post-transfer inconsistency; rollback attempted via `attempt_rollback_swap`.
+- **FundsLocked** — funds in escrow; dispute window active; retry after window expires.
+- **CancelDelay** — cancel attempted too early; retry after `created_at + cancel_delay_secs`.
+- **TokenTransfer** — transfer step failed; contact admin if funds appear stuck.
+- **Unauthorized** — wrong signer; ensure correct account signs the transaction.
+- **Expired** — dispute window expired; raise_dispute must be called within the window.
+
+Failed operations emit diagnostic events (`SwapInitFailed`, `SwapConfirmFailed`, `SwapCancelFailed`, `SwapReleaseFailed`) visible in the Soroban diagnostic event log even when a transaction rolls back. Off-chain indexers should monitor these events for alerting and recovery workflows.
+
 ## Out-of-Scope Items
 - Attacks requiring control of user wallets or private keys.
 - Theoretical attacks without practical impact.
