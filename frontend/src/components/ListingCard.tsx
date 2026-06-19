@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
+import { VersionHistoryBrowser } from "./VersionHistoryBrowser";
 import "./ListingCard.css";
 import { CopyButton } from "./CopyButton";
-import { USDC_DECIMALS } from "../lib/types";
+import { USDC_DECIMALS, IpVersion } from "../lib/types";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
@@ -14,6 +15,8 @@ interface IListingCard {
     ipfs_hash: string;
     price_usdc: number;
     pendingSwaps?: any[];
+    current_version?: number;
+    versions?: IpVersion[];
   };
   wallet: {
     walletId: string;
@@ -88,6 +91,10 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
     error: metaError,
   } = useIpfsMetadata(listing.ipfs_hash);
   const [showMerkle, setShowMerkle] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
+
+  const currentVersion = listing.current_version ?? 0;
+  const versions = listing.versions ?? [];
 
   return (
     <article className="lc" aria-label={`Listing #${listing.id}`}>
@@ -95,6 +102,11 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         <div className="lc__id flex items-center gap-2">
           <span>Listing #{listing.id}</span>
           <CopyButton text={listing.id.toString()} />
+          {currentVersion > 0 && (
+            <span className="lc__version-badge" title="Current version">
+              v{currentVersion}
+            </span>
+          )}
         </div>
         {listing.price_usdc > 0 && (
           <span className="lc__price">
@@ -162,6 +174,26 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         </button>
         {showMerkle && (
           <SetMerkleRootForm listingId={listing.id} wallet={wallet} />
+        )}
+      </div>
+
+      {/* Version history panel */}
+      <div className="lc__versions">
+        <button
+          className="lc__merkle-toggle"
+          onClick={() => setShowVersions((v) => !v)}
+          aria-expanded={showVersions}
+        >
+          {showVersions ? "▾" : "▸"} Version History
+          {currentVersion > 0 && (
+            <span className="lc__badge">{currentVersion}</span>
+          )}
+        </button>
+        {showVersions && (
+          <VersionHistoryBrowser
+            versions={versions}
+            currentVersion={currentVersion}
+          />
         )}
       </div>
 
