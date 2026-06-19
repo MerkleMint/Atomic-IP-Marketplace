@@ -1,0 +1,85 @@
+/* NotificationBell — bell button + dropdown panel */
+
+.nb {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.nb__btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid var(--border-color, #e2e8f0);
+  cursor: pointer;
+  color: var(--foreground, #0f172a);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.nb__btn:hover {
+  background: var(--secondary, #f1f5f9);
+  border-color: var(--primary, #7c3aed);
+}
+
+.nb__btn:focus-visible {
+  outline: 2px solid var(--primary, #7c3aed);
+  outline-offset: 2px;
+}
+
+.nb__icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* Unread badge */
+.nb__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--destructive, #ef4444);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+  transform: translate(30%, -30%);
+}
+
+/* Dropdown panel */
+.nb__panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 1000;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.14);
+  background: var(--background, #fff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  overflow: hidden;
+  animation: nb-pop 0.15s ease;
+}
+
+@keyframes nb-pop {
+  from { opacity: 0; transform: scale(0.97) translateY(-6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Responsive: on small screens open full-width anchored to right edge */
+@media (max-width: 480px) {
+  .nb__panel {
+    right: -8px;
+  }
+}
