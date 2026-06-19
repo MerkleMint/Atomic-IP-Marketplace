@@ -30,6 +30,8 @@ const mockSwap = {
   expires_at: Math.floor(Date.now() / 1000) + 3600,
   status: "Pending",
   decryption_key: null,
+  hold_until: null,
+  buyer_confirmed: false,
 };
 
 describe("SwapStatusDashboard", () => {

@@ -98,6 +98,12 @@ function decodeSwapScVal(
     );
   }
 
+  // hold_until is Option<u64>: scValToNative returns null or BigInt.
+  const holdUntil =
+    native.hold_until === null || native.hold_until === undefined
+      ? null
+      : Number(native.hold_until);
+
   return {
     id: swapId,
     listing_id: Number(native.listing_id ?? 0),
@@ -109,6 +115,8 @@ function decodeSwapScVal(
     expires_at: Number(native.expires_at ?? 0),
     status,
     decryption_key: decryptionKey,
+    hold_until: holdUntil,
+    buyer_confirmed: Boolean(native.buyer_confirmed),
   };
 }
 

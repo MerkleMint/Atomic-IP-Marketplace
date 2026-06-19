@@ -1,5 +1,6 @@
 import { CancelSwapButton } from "./CancelSwapButton";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
+import { HoldPeriodDisplay } from "./HoldPeriodDisplay";
 import type { Wallet } from "../lib/walletKit";
 import type { Swap } from "../hooks/useMySwaps";
 import "./SwapCard.css";
@@ -35,6 +36,12 @@ export function SwapCard({
         </span>
         <span className="swap-card__amount">{(swap.usdc_amount / Math.pow(10, USDC_DECIMALS)).toFixed(2)} USDC</span>
       </div>
+      <HoldPeriodDisplay
+        holdUntil={swap.hold_until}
+        buyerConfirmed={swap.buyer_confirmed}
+        status={swap.status}
+        onExpired={onSwapUpdated}
+      />
       {isBuyer && (
         <CancelSwapButton
           swap={swap}
