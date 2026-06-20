@@ -1,9 +1,10 @@
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMyListings } from "../hooks/useMyListings";
 import { ListingCard } from "./ListingCard";
 import { RegisterListingForm } from "./RegisterListingForm";
 import { useWallet } from "../context/WalletContext";
+import { useNotifications } from "../context/NotificationContext";
 import "./MyListingsDashboard.css";
 
 /**
@@ -20,6 +21,30 @@ export function MyListingsDashboard() {
     wallet?.address ?? null
   );
   const [showRegisterForm, setShowRegisterForm] = useState(false);
+  const { send } = useNotifications();
+
+  // Track listing IDs we have already notified about so we only fire once
+  // per session when a new listing appears (e.g. after RegisterListingForm success).
+  const notifiedListingIds = useRef(new Set<number>());
+
+  useEffect(() => {
+    for (const listing of listings) {
+      if (!notifiedListingIds.current.has(listing.id)) {
+        // Only send the notification if the set was already populated (i.e.
+        // not on the very first load, which would spam every existing listing).
+        if (notifiedListingIds.current.size > 0) {
+          send(
+            "listing_created",
+            "Listing Registered",
+            `Your IP has been registered as Listing #${listing.id} on the marketplace.`,
+            "success",
+            { meta: { listingId: listing.id } }
+          );
+        }
+        notifiedListingIds.current.add(listing.id);
+      }
+    }
+  }, [listings, send]);
 
   if (!wallet) {
     return (

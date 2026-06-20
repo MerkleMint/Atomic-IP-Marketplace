@@ -1,6 +1,6 @@
 import { CancelSwapButton } from "./CancelSwapButton";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
-import { HoldPeriodDisplay } from "./HoldPeriodDisplay";
+import { DisputePanel } from "./DisputePanel";
 import type { Wallet } from "../lib/walletKit";
 import type { Swap } from "../hooks/useMySwaps";
 import "./SwapCard.css";
@@ -57,6 +57,11 @@ export function SwapCard({
           onSuccess={onSwapUpdated}
         />
       )}
+      <DisputePanel
+        swap={swap}
+        wallet={wallet}
+        onSwapUpdated={onSwapUpdated}
+      />
     </div>
   );
 }
