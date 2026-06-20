@@ -36,6 +36,12 @@ export function SwapCard({
         </span>
         <span className="swap-card__amount">{(swap.usdc_amount / Math.pow(10, USDC_DECIMALS)).toFixed(2)} USDC</span>
       </div>
+      <HoldPeriodDisplay
+        holdUntil={swap.hold_until}
+        buyerConfirmed={swap.buyer_confirmed}
+        status={swap.status}
+        onExpired={onSwapUpdated}
+      />
       {isBuyer && (
         <CancelSwapButton
           swap={swap}

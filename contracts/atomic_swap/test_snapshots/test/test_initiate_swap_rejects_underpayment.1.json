@@ -534,6 +534,31 @@
                   },
                   {
                     "key": {
+                      "symbol": "escrow_hold"
+                    },
+                    "val": {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "default_hold_period_secs"
+                          },
+                          "val": {
+                            "u64": "86400"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "enabled"
+                          },
+                          "val": {
+                            "bool": false
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "fee_bps"
                     },
                     "val": {

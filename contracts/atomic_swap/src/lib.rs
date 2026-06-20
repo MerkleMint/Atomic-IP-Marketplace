@@ -92,6 +92,27 @@ pub enum SwapStatus {
     ResolvedSeller,
 }
 
+/// Protocol-wide escrow hold configuration.
+///
+/// Hold economics: after a swap is completed (seller submits the decryption key)
+/// the seller's payout can be held for an additional, seller-configurable window
+/// on top of the dispute window. During the hold the buyer may verify the
+/// delivered IP and, if satisfied, call `confirm_receipt` to release funds
+/// immediately. The hold gives honest buyers time to confirm and discourages a
+/// seller from sweeping funds the instant the dispute window lapses, while the
+/// MAX_HOLD_PERIOD_SECS cap and the immutability of `hold_until` (captured at
+/// confirm time) prevent a seller from weaponising the hold against the buyer.
+///
+/// `enabled` defaults to `false` so existing swaps are unaffected unless the
+/// admin turns the feature on globally or a seller opts in via
+/// `set_seller_hold_period`.
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub struct EscrowHoldConfig {
+    pub enabled: bool,
+    pub default_hold_period_secs: u64,
+}
+
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub struct Config {
@@ -102,6 +123,7 @@ pub struct Config {
     pub swap_expiry_secs: u64,
     pub zk_verifier: Address,
     pub ip_registry: Address,
+    pub escrow_hold: EscrowHoldConfig,
 }
 
 #[contracttype]
@@ -117,6 +139,13 @@ pub struct Swap {
     pub status: SwapStatus,
     pub decryption_key: Option<Bytes>,
     pub confirmed_at_ledger: Option<u32>,
+    /// Ledger timestamp at which the escrow hold period ends. Captured at
+    /// confirm time so it cannot be altered afterwards. `None` means no hold
+    /// applies (the feature was disabled for this swap's seller).
+    pub hold_until: Option<u64>,
+    /// Set to `true` when the buyer calls `confirm_receipt`, allowing the seller
+    /// to release funds before the hold period elapses.
+    pub buyer_confirmed: bool,
 }
 
 /// Outcome of a dispute after arbiter voting or admin resolution.
@@ -289,6 +318,32 @@ pub struct AdminTransferred {
     #[topic]
     pub old_admin: Address,
     pub new_admin: Address,
+}
+
+/// Emitted when a seller configures their escrow hold period.
+#[contractevent]
+pub struct SellerHoldPeriodUpdated {
+    #[topic]
+    pub seller: Address,
+    pub hold_period_secs: u64,
+}
+
+/// Emitted when the admin updates the global escrow hold configuration.
+#[contractevent]
+pub struct EscrowHoldConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub enabled: bool,
+    pub default_hold_period_secs: u64,
+}
+
+/// Emitted when a buyer confirms receipt, overriding the remaining hold period.
+/// Provides an on-chain audit trail of early-release authorisations.
+#[contractevent]
+pub struct BuyerConfirmedReceipt {
+    #[topic]
+    pub swap_id: u64,
+    pub buyer: Address,
 }
 
 /// Emitted when a dispute is resolved by the admin.
@@ -526,6 +581,41 @@ impl AtomicSwap {
         let _validated_fee = Self::calculate_fee_amount(env, usdc_amount, fee_bps);
     }
 
+    /// Resolve the effective hold period (in seconds) that applies to `seller`.
+    ///
+    /// Resolution order:
+    ///   1. A per-seller override (`SellerHoldPeriod`) always wins, even when it
+    ///      is `0` — that lets a seller explicitly opt out of holding funds.
+    ///   2. Otherwise, the global default applies only when holds are enabled.
+    ///   3. When holds are globally disabled and the seller has no override, the
+    ///      period is `0` (no hold), preserving the original swap flow.
+    fn effective_hold_period(env: &Env, config: &Config, seller: &Address) -> u64 {
+        if let Some(secs) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::SellerHoldPeriod(seller.clone()))
+        {
+            return secs;
+        }
+        if config.escrow_hold.enabled {
+            config.escrow_hold.default_hold_period_secs
+        } else {
+            0
+        }
+    }
+
+    /// Whether `swap` is still inside its escrow hold period. A buyer who has
+    /// confirmed receipt waives the remaining hold, so the funds are releasable.
+    fn is_hold_active(env: &Env, swap: &Swap) -> bool {
+        if swap.buyer_confirmed {
+            return false;
+        }
+        match swap.hold_until {
+            Some(hold_until) => env.ledger().timestamp() < hold_until,
+            None => false,
+        }
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -550,6 +640,13 @@ impl AtomicSwap {
             swap_expiry_secs,
             zk_verifier,
             ip_registry,
+            // Hold feature is opt-in: disabled globally by default so existing
+            // swap flows are unchanged until the admin enables it or a seller
+            // sets their own hold period.
+            escrow_hold: EscrowHoldConfig {
+                enabled: false,
+                default_hold_period_secs: DEFAULT_HOLD_PERIOD_SECS,
+            },
         };
         // Store Admin and Config in persistent storage instead of instance storage
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -608,6 +705,95 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+    }
+
+    /// Admin: enable/disable escrow holds globally and set the default period.
+    ///
+    /// The default period is bounded by `MAX_HOLD_PERIOD_SECS` to prevent funds
+    /// from being locked for an unreasonable amount of time.
+    pub fn set_escrow_hold_config(env: Env, enabled: bool, default_hold_period_secs: u64) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        if default_hold_period_secs > MAX_HOLD_PERIOD_SECS {
+            env.panic_with_error(ContractError::HoldPeriodTooLong);
+        }
+        let mut config: Config = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.escrow_hold = EscrowHoldConfig {
+            enabled,
+            default_hold_period_secs,
+        };
+        env.storage().persistent().set(&DataKey::Config, &config);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Config,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        EscrowHoldConfigUpdated {
+            admin,
+            enabled,
+            default_hold_period_secs,
+        }
+        .publish(&env);
+    }
+
+    /// Seller: configure the escrow hold period (in seconds) applied to their
+    /// future confirmed swaps. Pass `0` to opt out of holding funds.
+    ///
+    /// Security: only the seller can set their own period, the value is bounded
+    /// by `MAX_HOLD_PERIOD_SECS`, and the resulting `hold_until` is snapshotted
+    /// at confirm time — a seller cannot retroactively shorten or extend the
+    /// hold on a swap that is already in progress.
+    pub fn set_seller_hold_period(env: Env, seller: Address, hold_period_secs: u64) {
+        seller.require_auth();
+        if hold_period_secs > MAX_HOLD_PERIOD_SECS {
+            env.panic_with_error(ContractError::HoldPeriodTooLong);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SellerHoldPeriod(seller.clone()), &hold_period_secs);
+        env.storage().persistent().extend_ttl(
+            &DataKey::SellerHoldPeriod(seller.clone()),
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        SellerHoldPeriodUpdated {
+            seller,
+            hold_period_secs,
+        }
+        .publish(&env);
+    }
+
+    /// Returns the effective hold period (in seconds) that would apply to a swap
+    /// confirmed by `seller` right now. `0` means no hold.
+    pub fn get_hold_period(env: Env, seller: Address) -> u64 {
+        let config: Config = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        Self::effective_hold_period(&env, &config, &seller)
+    }
+
+    /// Returns `true` if the swap's escrow hold period is still in force, i.e.
+    /// funds cannot yet be released to the seller. Returns `false` when there is
+    /// no hold, the hold has elapsed, or the buyer has confirmed receipt.
+    pub fn hold_period_active(env: Env, swap_id: u64) -> bool {
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
+        {
+            Some(swap) => Self::is_hold_active(&env, &swap),
+            None => false,
+        }
     }
 
     pub fn update_config(env: Env, fee_bps: u32, fee_recipient: Address, cancel_delay_secs: u64) {
@@ -832,6 +1018,8 @@ impl AtomicSwap {
                 status: SwapStatus::Pending,
                 decryption_key: None,
                 confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
             },
         );
         env.storage()
@@ -943,6 +1131,14 @@ impl AtomicSwap {
         swap.status = SwapStatus::Completed;
         swap.decryption_key = Some(decryption_key.clone());
         swap.confirmed_at_ledger = Some(env.ledger().sequence());
+        // Snapshot the hold deadline now so the seller cannot manipulate it later.
+        let hold_secs = Self::effective_hold_period(&env, &config, &swap.seller);
+        swap.hold_until = if hold_secs > 0 {
+            Some(env.ledger().timestamp().saturating_add(hold_secs))
+        } else {
+            None
+        };
+        swap.buyer_confirmed = false;
         env.storage().persistent().set(&key, &swap);
         env.storage()
             .persistent()
@@ -996,6 +1192,19 @@ impl AtomicSwap {
             }
             .publish(&env);
             panic_with_error!(&env, ContractError::DisputeWindowActive);
+        }
+
+        // Escrow hold period: funds stay locked until the hold elapses, unless the
+        // buyer has confirmed receipt (set via confirm_receipt). This is an
+        // independent gate layered on top of the dispute window.
+        if Self::is_hold_active(&env, &swap) {
+            SwapReleaseFailed {
+                swap_id,
+                error_code: ContractError::HoldPeriodActive as u32,
+                seller: swap.seller.clone(),
+            }
+            .publish(&env);
+            panic_with_error!(&env, ContractError::HoldPeriodActive);
         }
 
         let token_client = token::Client::new(&env, &swap.usdc_token);
@@ -1054,6 +1263,40 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    /// Buyer: confirm receipt of the delivered IP, waiving the remaining escrow
+    /// hold period so the seller may release funds immediately.
+    ///
+    /// This is the buyer-confirmation override: only the buyer can call it, and
+    /// it does not bypass the dispute window — the buyer keeps their dispute
+    /// rights, but voluntarily signals the goods were received.
+    pub fn confirm_receipt(env: Env, swap_id: u64) {
+        let key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Completed {
+            env.panic_with_error(ContractError::SwapNotCompleted);
+        }
+        swap.buyer.require_auth();
+
+        swap.buyer_confirmed = true;
+        env.storage().persistent().set(&key, &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        BuyerConfirmedReceipt {
+            swap_id,
+            buyer: swap.buyer,
+        }
+        .publish(&env);
     }
 
     pub fn raise_dispute(env: Env, swap_id: u64) {
@@ -3422,6 +3665,10 @@ mod test {
                 swap_expiry_secs: 3600, // Default in initialize call
                 zk_verifier: zk_id,
                 ip_registry: registry_id,
+                escrow_hold: EscrowHoldConfig {
+                    enabled: false,
+                    default_hold_period_secs: DEFAULT_HOLD_PERIOD_SECS,
+                },
             })
         );
 
@@ -4800,5 +5047,276 @@ mod test {
         let usdc_client = token::Client::new(&env, &usdc_id);
         assert_eq!(usdc_client.balance(&contract_id), 0);
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    // ── escrow hold period tests ──────────────────────────────────────────────
+
+    /// Set up an initiated (but not yet confirmed) swap with a working ZK
+    /// verifier. The dispute window is shortened to 10 ledgers so tests can
+    /// isolate the hold period from the dispute window. Returns the handles a
+    /// test needs to configure the hold, confirm, and release.
+    fn initiated_hold_swap<'a>(
+        env: &'a Env,
+    ) -> (
+        AtomicSwapClient<'a>,
+        Address, // buyer
+        Address, // seller
+        Address, // usdc_id
+        u64,     // swap_id
+        Bytes,   // decryption key
+        soroban_sdk::Vec<ProofNode>,
+    ) {
+        let buyer = Address::generate(env);
+        let seller = Address::generate(env);
+        let usdc_id = setup_usdc(env, &buyer, 500);
+        let (registry_id, listing_id) = setup_registry(env, &seller, 500);
+        let key_bytes = Bytes::from_slice(env, b"secret-key");
+        let (zk_id, proof_path) = setup_zk_verifier(env, &seller, listing_id, &key_bytes);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(env, &contract_id);
+        client.initialize(
+            &Address::generate(env),
+            &0u32,
+            &Address::generate(env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+        token::Client::new(env, &usdc_id).approve(&buyer, &contract_id, &500i128, &200u32);
+        client.set_dispute_window(&10u32);
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        (client, buyer, seller, usdc_id, swap_id, key_bytes, proof_path)
+    }
+
+    /// A seller-configured hold keeps funds locked even after the dispute window
+    /// elapses, until the hold period passes. This is the early-release guard.
+    #[test]
+    fn test_hold_period_blocks_release_until_expiry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        client.set_seller_hold_period(&seller, &DEFAULT_HOLD_PERIOD_SECS);
+        client.confirm_swap(&swap_id, &key, &proof);
+
+        // Move past the dispute window but stay within the hold period.
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        assert!(client.hold_period_active(&swap_id));
+        let blocked = client.try_release_to_seller(&swap_id);
+        assert_eq!(
+            blocked,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::HoldPeriodActive as u32
+            )))
+        );
+
+        // Advance the clock past the hold period; release now succeeds.
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(DEFAULT_HOLD_PERIOD_SECS + 1));
+        assert!(!client.hold_period_active(&swap_id));
+        client.release_to_seller(&swap_id);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+    }
+
+    /// Time-locked release accuracy: the hold is active strictly before
+    /// `hold_until` and inactive at/after it (exclusive lower bound).
+    #[test]
+    fn test_hold_period_boundary_is_exact() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let hold_secs = 1_000u64;
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        client.set_seller_hold_period(&seller, &hold_secs);
+        // Confirm at timestamp 0 so hold_until == hold_secs exactly.
+        client.confirm_swap(&swap_id, &key, &proof);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+
+        let swap = client.get_swap(&swap_id).unwrap();
+        assert_eq!(swap.hold_until, Some(hold_secs));
+
+        // One second before expiry: still active.
+        env.ledger().with_mut(|li| li.timestamp = hold_secs - 1);
+        assert!(client.hold_period_active(&swap_id));
+        assert!(client.try_release_to_seller(&swap_id).is_err());
+
+        // Exactly at expiry: no longer active, release allowed.
+        env.ledger().with_mut(|li| li.timestamp = hold_secs);
+        assert!(!client.hold_period_active(&swap_id));
+        client.release_to_seller(&swap_id);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+    }
+
+    /// The buyer can confirm receipt to waive the remaining hold, letting the
+    /// seller release immediately even though the hold period has not elapsed.
+    #[test]
+    fn test_buyer_confirmation_overrides_hold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, buyer, seller, usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        client.set_seller_hold_period(&seller, &DEFAULT_HOLD_PERIOD_SECS);
+        client.confirm_swap(&swap_id, &key, &proof);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+
+        // Still inside the hold period.
+        assert!(client.hold_period_active(&swap_id));
+
+        // Buyer confirms receipt; hold is waived.
+        client.confirm_receipt(&swap_id);
+        assert!(!client.hold_period_active(&swap_id));
+
+        client.release_to_seller(&swap_id);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+        // Seller received the funds (fee 0, no royalty).
+        assert_eq!(token::Client::new(&env, &usdc_id).balance(&seller), 500);
+        let _ = buyer;
+    }
+
+    /// Only the buyer may confirm receipt — a third party cannot self-approve to
+    /// bypass the buyer's hold.
+    #[test]
+    fn test_confirm_receipt_requires_buyer_auth() {
+        let env = Env::default();
+        env.mock_all_auths(); // setup only
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+        client.set_seller_hold_period(&seller, &DEFAULT_HOLD_PERIOD_SECS);
+        client.confirm_swap(&swap_id, &key, &proof);
+
+        // Clear blanket auth and attempt confirm_receipt as a third party.
+        let third_party = Address::generate(&env);
+        env.set_auths(&[]);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &third_party,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "confirm_receipt",
+                args: (swap_id,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(
+            client.try_confirm_receipt(&swap_id).is_err(),
+            "a non-buyer must not be able to confirm receipt"
+        );
+    }
+
+    /// When holds are disabled globally and the seller set no override, swaps
+    /// carry no hold (backwards-compatible default).
+    #[test]
+    fn test_no_hold_when_disabled_and_no_override() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        assert_eq!(client.get_hold_period(&seller), 0);
+        client.confirm_swap(&swap_id, &key, &proof);
+        let swap = client.get_swap(&swap_id).unwrap();
+        assert_eq!(swap.hold_until, None);
+
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        assert!(!client.hold_period_active(&swap_id));
+        client.release_to_seller(&swap_id);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+    }
+
+    /// The global default hold applies to a seller without an explicit override.
+    #[test]
+    fn test_global_hold_applies_without_seller_override() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        client.set_escrow_hold_config(&true, &500u64);
+        assert_eq!(client.get_hold_period(&seller), 500);
+
+        client.confirm_swap(&swap_id, &key, &proof);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        assert!(client.hold_period_active(&swap_id));
+        assert!(client.try_release_to_seller(&swap_id).is_err());
+    }
+
+    /// A per-seller override (including `0` to opt out) takes precedence over the
+    /// global default.
+    #[test]
+    fn test_seller_override_takes_precedence() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, seller, _usdc_id, swap_id, key, proof) = initiated_hold_swap(&env);
+
+        client.set_escrow_hold_config(&true, &DEFAULT_HOLD_PERIOD_SECS);
+        // Seller opts out entirely.
+        client.set_seller_hold_period(&seller, &0u64);
+        assert_eq!(client.get_hold_period(&seller), 0);
+
+        client.confirm_swap(&swap_id, &key, &proof);
+        let swap = client.get_swap(&swap_id).unwrap();
+        assert_eq!(swap.hold_until, None);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        assert!(!client.hold_period_active(&swap_id));
+    }
+
+    /// Hold periods above the cap are rejected, preventing indefinite fund locks.
+    #[test]
+    fn test_set_seller_hold_period_rejects_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, seller, _usdc_id, _swap_id, _key, _proof) = initiated_hold_swap(&env);
+
+        let result = client.try_set_seller_hold_period(&seller, &(MAX_HOLD_PERIOD_SECS + 1));
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::HoldPeriodTooLong as u32
+            )))
+        );
+    }
+
+    /// The admin cannot set a global default above the cap either.
+    #[test]
+    fn test_set_escrow_hold_config_rejects_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, _seller, _usdc_id, _swap_id, _key, _proof) = initiated_hold_swap(&env);
+
+        let result = client.try_set_escrow_hold_config(&true, &(MAX_HOLD_PERIOD_SECS + 1));
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::HoldPeriodTooLong as u32
+            )))
+        );
+    }
+
+    /// confirm_receipt is only valid on a Completed swap.
+    #[test]
+    fn test_confirm_receipt_requires_completed_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _buyer, _seller, _usdc_id, swap_id, _key, _proof) = initiated_hold_swap(&env);
+
+        // Swap is still Pending (not confirmed).
+        let result = client.try_confirm_receipt(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::SwapNotCompleted as u32
+            )))
+        );
     }
 }
