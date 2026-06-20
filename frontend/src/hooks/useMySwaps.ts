@@ -14,6 +14,10 @@ export interface Swap {
   expires_at: number;
   status: string;
   decryption_key: string | null;
+  /** Unix timestamp (secs) when the escrow hold period ends, or null if no hold applies. */
+  hold_until: number | null;
+  /** True once the buyer has confirmed receipt, waiving the remaining hold. */
+  buyer_confirmed: boolean;
 }
 
 export function useMySwaps(walletAddress: string | null) {

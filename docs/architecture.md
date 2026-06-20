@@ -79,3 +79,75 @@ sequenceDiagram
     USDC-->>AtomicSwap: ok
     AtomicSwap-->>Buyer: ok (status → Cancelled)
 ```
+
+## Escrow Hold Period
+
+After a swap is completed (the seller submits the decryption key), the seller's
+payout can be held for an additional, **seller-configurable** window layered on
+top of the dispute window. This gives an honest buyer time to verify the
+delivered IP before funds move, and lets a reputable seller advertise a buyer
+protection window.
+
+### Economics & rationale
+
+- **Default: 24 hours** (`DEFAULT_HOLD_PERIOD_SECS = 86_400`). Applied when a
+  seller enables holds without choosing a custom value.
+- **Per-seller configuration.** A seller calls `set_seller_hold_period(seller,
+  secs)`. A value of `0` opts out entirely. Sellers competing for buyers can
+  offer a longer hold as a trust signal; sellers who want faster settlement can
+  shorten or disable it.
+- **Global default.** The admin may enable holds protocol-wide and set the
+  default via `set_escrow_hold_config(enabled, default_secs)`. A per-seller
+  override always wins over the global default.
+- **Buyer confirmation override.** Once satisfied, the buyer calls
+  `confirm_receipt(swap_id)` to waive the remaining hold, so the seller is paid
+  immediately. This keeps a cooperative buyer from needlessly delaying an
+  honest seller while still defaulting to buyer protection.
+
+### Security properties
+
+- **No manipulation after the fact.** `hold_until` is snapshotted at
+  `confirm_swap` time from the seller's then-current configuration. Changing the
+  per-seller or global setting afterwards cannot shorten or extend the hold on a
+  swap that is already in progress.
+- **Bounded duration.** Both setters reject values above
+  `MAX_HOLD_PERIOD_SECS = 2_592_000` (30 days), preventing a hold from locking
+  buyer funds indefinitely.
+- **Authorization.** Only the buyer can call `confirm_receipt`; only the seller
+  can set their own hold period; only the admin can change the global default.
+- **Independent gate.** `release_to_seller` enforces the hold (error
+  `HoldPeriodActive`) in addition to the dispute window — both must clear before
+  funds are released, unless the buyer has confirmed receipt.
+
+### Audit trail
+
+`SellerHoldPeriodUpdated`, `EscrowHoldConfigUpdated`, and `BuyerConfirmedReceipt`
+events provide an on-chain record of configuration changes and early-release
+authorizations. The `hold_period_active(swap_id)` view returns whether a swap's
+funds are currently time-locked, which the UI surfaces via `HoldPeriodDisplay`.
+
+```mermaid
+sequenceDiagram
+    actor Seller
+    actor Buyer
+    participant AtomicSwap as atomic_swap
+    participant USDC as USDC Token
+
+    Seller->>AtomicSwap: set_seller_hold_period(seller, 86400)
+    Note over AtomicSwap: bounded by MAX_HOLD_PERIOD_SECS
+
+    Seller->>AtomicSwap: confirm_swap(swap_id, key, proof)
+    Note over AtomicSwap: status → Completed; hold_until = now + hold_secs
+
+    alt Buyer confirms receipt early
+        Buyer->>AtomicSwap: confirm_receipt(swap_id)
+        Note over AtomicSwap: buyer_confirmed = true (hold waived)
+    else Hold period elapses
+        Note over AtomicSwap: ledger.timestamp >= hold_until
+    end
+
+    Seller->>AtomicSwap: release_to_seller(swap_id)
+    Note over AtomicSwap: requires dispute window cleared AND hold not active
+    AtomicSwap->>USDC: transfer(contract → seller, amount − fees)
+    AtomicSwap-->>Seller: ok (status → ResolvedSeller)
+```

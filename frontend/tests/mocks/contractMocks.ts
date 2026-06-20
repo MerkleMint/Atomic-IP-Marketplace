@@ -16,6 +16,8 @@ export const createMockSwap = (overrides?: Partial<Swap>): Swap => ({
   expires_at: Math.floor(Date.now() / 1000) + 3600,
   status: "Pending",
   decryption_key: null,
+  hold_until: null,
+  buyer_confirmed: false,
   ...overrides,
 });
 

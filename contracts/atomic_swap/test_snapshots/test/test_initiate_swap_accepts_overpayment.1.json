@@ -664,6 +664,31 @@
                   },
                   {
                     "key": {
+                      "symbol": "escrow_hold"
+                    },
+                    "val": {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "default_hold_period_secs"
+                          },
+                          "val": {
+                            "u64": "86400"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "enabled"
+                          },
+                          "val": {
+                            "bool": false
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "fee_bps"
                     },
                     "val": {
@@ -819,6 +844,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "buyer_confirmed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "confirmed_at_ledger"
                     },
                     "val": "void"
@@ -844,6 +877,12 @@
                     "val": {
                       "u64": "3600"
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "hold_until"
+                    },
+                    "val": "void"
                   },
                   {
                     "key": {

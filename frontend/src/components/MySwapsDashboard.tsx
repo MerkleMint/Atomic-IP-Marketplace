@@ -1,12 +1,16 @@
 
 import { useWallet } from "../context/WalletContext";
 import { useMySwaps } from "../hooks/useMySwaps";
+import { useSwapNotifications } from "../context/NotificationContext";
 import { SwapCard } from "./SwapCard";
 import "./MySwapsDashboard.css";
 
 export function MySwapsDashboard() {
   const { wallet } = useWallet();
   const { swaps, ledgerTimestamp, loading, error, refresh } = useMySwaps(wallet?.address ?? null);
+
+  // Fire notifications on swap status transitions
+  useSwapNotifications(swaps, wallet?.address ?? null);
 
   if (!wallet) {
     return (

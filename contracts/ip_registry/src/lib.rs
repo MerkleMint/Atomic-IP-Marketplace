@@ -30,8 +30,21 @@ pub enum ContractError {
     AlreadyInitialized = 7,
     InvalidPrice = 8,
     ContractPaused = 9,
-    VersionDowngrade = 10,
+    BatchEmpty = 10,
+    BatchTooLarge = 11,
+    BatchNotFound = 12,
 }
+
+/// Maximum number of entries accepted in a single batch operation.
+///
+/// This is the contract-level validation cap. Note that batches execute
+/// atomically within ONE transaction, so the number of listings that can
+/// actually be created in a single call is further bounded by the network's
+/// per-transaction resource limits (ledger write-entry and footprint limits —
+/// on the order of a few dozen entries with default Stellar limits). Callers
+/// approaching those limits should split their work across multiple batch
+/// calls; the persisted [`BatchRecord`] history makes such resumption easy.
+pub const MAX_BATCH_SIZE: u32 = 100;
 
 /// Minimal interface to check for a pending swap on a listing (for cross-contract calls).
 #[contractclient(name = "AtomicSwapClient")]
@@ -88,18 +101,66 @@ pub struct Listing {
     pub price_usdc: i128,
 }
 
-/// A snapshot of a listing at a specific version, stored as part of the immutable version history.
+/// Lifecycle status of a batch operation.
+///
+/// On-chain batches execute atomically: a batch that returns successfully is
+/// always `Completed`. `Pending`/`InProgress`/`Failed` exist so off-chain
+/// callers and the stored history can reason about partial progress when a
+/// batch is built up or replayed across multiple submissions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BatchStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+/// Tracks how far a batch operation has progressed.
+///
+/// `processed == succeeded + failed` always holds. For an atomic batch the
+/// final tracker has `processed == succeeded == total` and `failed == 0`,
+/// because any failure aborts the whole transaction and rolls back every write.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProgressTracker {
+    pub total: u32,
+    pub processed: u32,
+    pub succeeded: u32,
+    pub failed: u32,
+}
+
+/// A batch listing-creation operation, returned by `batch_create_listings`.
+///
+/// Carries the submitted `entries`, the resulting `status`, a `progress`
+/// tracker, and the `listing_ids` that were created. The full `entries` are
+/// returned to the caller for convenience but are intentionally NOT persisted
+/// (see `BatchRecord`) to stay within contract storage limits.
 #[contracttype]
 #[derive(Clone)]
-pub struct Version {
-    pub version_number: u32,
-    pub timestamp: u64,
-    pub changelog: Bytes,
-    pub ipfs_hash: Bytes,
-    pub merkle_root: Bytes,
-    pub price_usdc: i128,
-    pub royalty_bps: u32,
-    pub created_by: Address,
+pub struct BatchOperation {
+    pub id: u64,
+    pub owner: Address,
+    pub entries: Vec<IpEntry>,
+    pub status: BatchStatus,
+    pub progress: ProgressTracker,
+    pub listing_ids: Vec<u64>,
+}
+
+/// Compact, persisted history record for a completed batch operation.
+///
+/// Stored under `DataKey::Batch(id)`. Deliberately omits the raw `entries`
+/// (whose ipfs_hash/merkle_root bytes are large and already stored on each
+/// individual `Listing`) so that batch history stays storage-efficient. The
+/// `listing_ids` provide the link back to the created listings.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchRecord {
+    pub id: u64,
+    pub owner: Address,
+    pub status: BatchStatus,
+    pub progress: ProgressTracker,
+    pub listing_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -109,10 +170,8 @@ pub enum DataKey {
     OwnerIndex(Address),
     Config,
     Paused,
-    /// Stores Vec<Version> — the full immutable history for a listing.
-    VersionHistory(u64),
-    /// Stores the current version number (u32) for a listing.
-    ListingVersion(u64),
+    Batch(u64),
+    BatchCounter,
 }
 
 #[contractevent]
@@ -143,6 +202,17 @@ pub struct BatchIpRegistered {
     pub merkle_roots: Vec<Bytes>,
     pub prices_usdc: Vec<i128>,
     pub royalty_bps_list: Vec<u32>,
+}
+
+/// Emitted once when a `batch_create_listings` operation completes successfully.
+#[contractevent]
+pub struct BatchOperationCompleted {
+    #[topic]
+    pub owner: Address,
+    #[topic]
+    pub batch_id: u64,
+    pub total: u32,
+    pub listing_ids: Vec<u64>,
 }
 
 #[contractevent]
@@ -189,15 +259,45 @@ pub struct ContractUnpausedEvent {
     pub admin: Address,
 }
 
-#[contractevent]
-pub struct VersionCreated {
-    #[topic]
-    pub listing_id: u64,
-    #[topic]
-    pub owner: Address,
-    pub version_number: u32,
-    pub changelog: Bytes,
-    pub ipfs_hash: Bytes,
+/// Stateless pre-flight validator for batch operations.
+///
+/// All checks run *before* any storage writes so that an invalid batch is
+/// rejected without mutating contract state, which is what makes the batch
+/// effectively atomic (no partial writes ever reach storage on a bad batch).
+pub struct BatchValidator;
+
+impl BatchValidator {
+    /// Validate a whole batch: size bounds plus every individual entry.
+    ///
+    /// Returns the first error encountered. `Ok(())` guarantees the batch is
+    /// safe to execute end-to-end.
+    pub fn validate(entries: &Vec<IpEntry>) -> Result<(), ContractError> {
+        let len = entries.len();
+        if len == 0 {
+            return Err(ContractError::BatchEmpty);
+        }
+        if len > MAX_BATCH_SIZE {
+            return Err(ContractError::BatchTooLarge);
+        }
+        let mut i: u32 = 0;
+        while i < len {
+            Self::validate_entry(&entries.get(i).unwrap())?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// Validate a single entry using the same rules as `register_ip`.
+    pub fn validate_entry(entry: &IpEntry) -> Result<(), ContractError> {
+        if entry.ipfs_hash.is_empty() || entry.merkle_root.is_empty() || entry.royalty_bps > 10_000
+        {
+            return Err(ContractError::InvalidInput);
+        }
+        if entry.price_usdc <= 0 {
+            return Err(ContractError::InvalidPrice);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "contract")]
@@ -482,6 +582,165 @@ impl IpRegistry {
         .publish(&env);
 
         listing_ids
+    }
+
+    /// Atomically create up to `MAX_BATCH_SIZE` listings for `owner` in a single
+    /// transaction, with pre-flight validation, progress tracking, and a
+    /// persisted history record.
+    ///
+    /// Execution model & limitations:
+    /// - **Atomic / rollback on partial failure:** the entire batch is validated
+    ///   up front via [`BatchValidator`]. If any entry is invalid an error is
+    ///   returned before writing anything, so no listings are created. Likewise,
+    ///   any failure mid-execution (e.g. counter overflow) aborts the whole
+    ///   transaction and the host rolls back every write — there is never a
+    ///   partially-applied batch.
+    /// - **Progress tracking:** the returned [`BatchOperation`] and the stored
+    ///   [`BatchRecord`] carry a [`ProgressTracker`]. A successful batch reports
+    ///   `processed == succeeded == total`, `failed == 0`.
+    /// - **History / resumption:** each batch is assigned a monotonic id and a
+    ///   compact [`BatchRecord`] is stored under [`DataKey::Batch`]. Off-chain
+    ///   callers can query it via [`IpRegistry::get_batch_operation`] to confirm
+    ///   how much completed and resume by resubmitting any remaining entries.
+    /// - **Storage efficiency:** the history record stores only ids/counters,
+    ///   not the raw entry bytes; the owner index is read once and written once
+    ///   per batch regardless of batch size (O(1) index IO).
+    pub fn batch_create_listings(
+        env: Env,
+        owner: Address,
+        entries: Vec<IpEntry>,
+    ) -> Result<BatchOperation, ContractError> {
+        assert_not_paused(&env);
+
+        // Pre-flight validation: reject the whole batch before any writes.
+        BatchValidator::validate(&entries)?;
+
+        owner.require_auth();
+        let cfg = get_config(&env);
+
+        let total = entries.len();
+        let mut listing_ids: Vec<u64> = Vec::new(&env);
+
+        // Read the owner's index once; accumulate in memory; flush once after.
+        let idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut owner_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut succeeded: u32 = 0;
+        let mut j: u32 = 0;
+        while j < total {
+            let entry = entries.get(j).unwrap();
+
+            let prev: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Counter)
+                .unwrap_or(0);
+            let id: u64 = prev.checked_add(1).ok_or(ContractError::CounterOverflow)?;
+            env.storage().persistent().set(&DataKey::Counter, &id);
+            extend_persistent(&env, &DataKey::Counter, &cfg);
+
+            let key = DataKey::Listing(id);
+            env.storage().persistent().set(
+                &key,
+                &Listing {
+                    owner: owner.clone(),
+                    ipfs_hash: entry.ipfs_hash.clone(),
+                    merkle_root: entry.merkle_root.clone(),
+                    royalty_bps: entry.royalty_bps,
+                    royalty_recipient: entry.royalty_recipient.clone(),
+                    price_usdc: entry.price_usdc,
+                },
+            );
+            extend_persistent(&env, &key, &cfg);
+
+            owner_ids.push_back(id);
+            listing_ids.push_back(id);
+            succeeded += 1;
+            j += 1;
+        }
+
+        // Single write for the owner index regardless of batch size.
+        env.storage().persistent().set(&idx_key, &owner_ids);
+        extend_persistent(&env, &idx_key, &cfg);
+
+        // Assign a batch id and persist a compact history record.
+        let prev_batch: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BatchCounter)
+            .unwrap_or(0);
+        let batch_id: u64 = prev_batch
+            .checked_add(1)
+            .ok_or(ContractError::CounterOverflow)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::BatchCounter, &batch_id);
+        extend_persistent(&env, &DataKey::BatchCounter, &cfg);
+
+        let progress = ProgressTracker {
+            total,
+            processed: succeeded,
+            succeeded,
+            failed: 0,
+        };
+
+        let record = BatchRecord {
+            id: batch_id,
+            owner: owner.clone(),
+            status: BatchStatus::Completed,
+            progress: progress.clone(),
+            listing_ids: listing_ids.clone(),
+        };
+        let batch_key = DataKey::Batch(batch_id);
+        env.storage().persistent().set(&batch_key, &record);
+        extend_persistent(&env, &batch_key, &cfg);
+
+        env.storage().persistent().extend_ttl(
+            &DataKey::Config,
+            cfg.ttl_threshold,
+            cfg.ttl_extend_to,
+        );
+
+        BatchOperationCompleted {
+            owner: owner.clone(),
+            batch_id,
+            total,
+            listing_ids: listing_ids.clone(),
+        }
+        .publish(&env);
+
+        Ok(BatchOperation {
+            id: batch_id,
+            owner,
+            entries,
+            status: BatchStatus::Completed,
+            progress,
+            listing_ids,
+        })
+    }
+
+    /// Fetch the stored history record for a previously executed batch.
+    /// Returns `None` if no batch with that id exists. Off-chain callers use
+    /// this for progress inspection and resumption decisions.
+    pub fn get_batch_operation(env: Env, batch_id: u64) -> Option<BatchRecord> {
+        let key = DataKey::Batch(batch_id);
+        if env.storage().persistent().has(&key) {
+            let cfg = get_config(&env);
+            extend_persistent(&env, &key, &cfg);
+        }
+        env.storage().persistent().get(&key)
+    }
+
+    /// Total number of batch operations executed (monotonic counter).
+    pub fn batch_count(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BatchCounter)
+            .unwrap_or(0)
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
@@ -2312,5 +2571,253 @@ mod test {
         let v2 = client.get_version(&id, &2).unwrap();
         assert_eq!(v2.price_usdc, 2000);
         assert_eq!(v2.changelog, Bytes::from_slice(&env, b"changelog2"));
+    }
+
+    // ── Batch operations (batch_create_listings) ────────────────────────────
+
+    /// Build `n` valid IpEntry values for `owner`.
+    fn make_entries(env: &Env, owner: &Address, n: u32) -> Vec<IpEntry> {
+        let mut entries: Vec<IpEntry> = Vec::new(env);
+        let mut i: u32 = 0;
+        while i < n {
+            entries.push_back(IpEntry {
+                ipfs_hash: Bytes::from_slice(env, &[b'Q', b'm', (i & 0xff) as u8]),
+                merkle_root: Bytes::from_slice(env, &[b'r', (i & 0xff) as u8]),
+                royalty_bps: 500,
+                royalty_recipient: owner.clone(),
+                price_usdc: 1000 + i as i128,
+            });
+            i += 1;
+        }
+        entries
+    }
+
+    #[test]
+    fn test_batch_create_listings_single() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, 1);
+        let op = client.batch_create_listings(&owner, &entries);
+        assert_eq!(op.id, 1);
+        assert_eq!(op.status, BatchStatus::Completed);
+        assert_eq!(op.listing_ids.len(), 1);
+        assert_eq!(op.progress.total, 1);
+        assert_eq!(op.progress.processed, 1);
+        assert_eq!(op.progress.succeeded, 1);
+        assert_eq!(op.progress.failed, 0);
+        assert_eq!(client.listing_count(), 1);
+        assert_eq!(client.list_by_owner(&owner).len(), 1);
+    }
+
+    #[test]
+    fn test_batch_create_listings_various_sizes() {
+        // A spread of sizes should all succeed with consistent counters/index.
+        // Sizes are kept within the network's per-transaction write limits so
+        // the test reflects what is actually executable on-chain.
+        for size in [1u32, 10, 25, 40] {
+            let (env, client, _admin) = setup();
+            let owner = Address::generate(&env);
+            let entries = make_entries(&env, &owner, size);
+            let op = client.batch_create_listings(&owner, &entries);
+            assert_eq!(op.listing_ids.len(), size);
+            assert_eq!(op.progress.total, size);
+            assert_eq!(op.progress.succeeded, size);
+            assert_eq!(client.listing_count(), size as u64);
+            assert_eq!(client.list_by_owner(&owner).len(), size);
+        }
+    }
+
+    #[test]
+    fn test_batch_create_listings_large_batch_sequential_ids() {
+        // "Max-size" executable batch: large enough to exercise the loop and
+        // O(1) index IO while staying within per-transaction resource limits.
+        // (MAX_BATCH_SIZE is the validation cap; a full 100-write batch exceeds
+        // the network's per-transaction write-entry limit — see MAX_BATCH_SIZE
+        // docs — so executable batches are bounded below it.)
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let size = 40u32;
+        let entries = make_entries(&env, &owner, size);
+        let op = client.batch_create_listings(&owner, &entries);
+        assert_eq!(op.listing_ids.len(), size);
+        // IDs are sequential 1..=size in insertion order.
+        for i in 0..size {
+            assert_eq!(op.listing_ids.get(i).unwrap(), (i + 1) as u64);
+        }
+        assert_eq!(client.listing_count(), size as u64);
+        assert_eq!(client.list_by_owner(&owner).len(), size);
+    }
+
+    #[test]
+    fn test_batch_validator_accepts_full_max_size() {
+        // The validator (pure pre-flight logic, no storage writes) accepts a
+        // full MAX_BATCH_SIZE batch even though executing that many writes in a
+        // single transaction would exceed network resource limits.
+        let env = Env::default();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, MAX_BATCH_SIZE);
+        assert_eq!(BatchValidator::validate(&entries), Ok(()));
+    }
+
+    #[test]
+    fn test_batch_create_listings_empty_rejected() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries: Vec<IpEntry> = Vec::new(&env);
+        let result = client.try_batch_create_listings(&owner, &entries);
+        assert_eq!(result.err(), Some(Ok(ContractError::BatchEmpty)));
+        assert_eq!(client.listing_count(), 0);
+        assert_eq!(client.batch_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_create_listings_over_max_rejected() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, MAX_BATCH_SIZE + 1);
+        let result = client.try_batch_create_listings(&owner, &entries);
+        assert_eq!(result.err(), Some(Ok(ContractError::BatchTooLarge)));
+        // Rollback: nothing was created.
+        assert_eq!(client.listing_count(), 0);
+        assert_eq!(client.batch_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_create_listings_rollback_on_invalid_entry() {
+        // A single invalid entry in the middle must roll back the entire batch.
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries = make_entries(&env, &owner, 3);
+        entries.set(
+            1,
+            IpEntry {
+                ipfs_hash: Bytes::new(&env), // invalid: empty hash
+                merkle_root: Bytes::from_slice(&env, b"root"),
+                royalty_bps: 500,
+                royalty_recipient: owner.clone(),
+                price_usdc: 1000,
+            },
+        );
+        let result = client.try_batch_create_listings(&owner, &entries);
+        assert_eq!(result.err(), Some(Ok(ContractError::InvalidInput)));
+        // No partial writes.
+        assert_eq!(client.listing_count(), 0);
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert_eq!(client.batch_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_create_listings_rollback_on_invalid_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries = make_entries(&env, &owner, 2);
+        entries.set(
+            0,
+            IpEntry {
+                ipfs_hash: Bytes::from_slice(&env, b"QmHash"),
+                merkle_root: Bytes::from_slice(&env, b"root"),
+                royalty_bps: 500,
+                royalty_recipient: owner.clone(),
+                price_usdc: 0, // invalid: non-positive price
+            },
+        );
+        let result = client.try_batch_create_listings(&owner, &entries);
+        assert_eq!(result.err(), Some(Ok(ContractError::InvalidPrice)));
+        assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_create_listings_stores_history_record() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, 4);
+        let op = client.batch_create_listings(&owner, &entries);
+
+        assert_eq!(client.batch_count(), 1);
+        let record = client
+            .get_batch_operation(&op.id)
+            .expect("batch record should exist");
+        assert_eq!(record.id, op.id);
+        assert_eq!(record.owner, owner);
+        assert_eq!(record.status, BatchStatus::Completed);
+        assert_eq!(record.progress.total, 4);
+        assert_eq!(record.progress.succeeded, 4);
+        assert_eq!(record.progress.failed, 0);
+        assert_eq!(record.listing_ids.len(), 4);
+        for i in 0..4u32 {
+            assert_eq!(record.listing_ids.get(i).unwrap(), op.listing_ids.get(i).unwrap());
+        }
+    }
+
+    #[test]
+    fn test_get_batch_operation_missing_returns_none() {
+        let (_env, client, _admin) = setup();
+        assert!(client.get_batch_operation(&999).is_none());
+    }
+
+    #[test]
+    fn test_batch_create_listings_progress_accuracy() {
+        // processed == succeeded + failed, and succeeded == total for an atomic batch.
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, 7);
+        let op = client.batch_create_listings(&owner, &entries);
+        assert_eq!(
+            op.progress.processed,
+            op.progress.succeeded + op.progress.failed
+        );
+        assert_eq!(op.progress.succeeded, op.progress.total);
+        assert_eq!(op.progress.total, 7);
+    }
+
+    #[test]
+    fn test_batch_create_listings_sequential_batch_ids() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let op1 = client.batch_create_listings(&owner, &make_entries(&env, &owner, 2));
+        let op2 = client.batch_create_listings(&owner, &make_entries(&env, &owner, 3));
+        assert_eq!(op1.id, 1);
+        assert_eq!(op2.id, 2);
+        assert_eq!(client.batch_count(), 2);
+        // Listings accumulate across batches; owner index holds all of them.
+        assert_eq!(client.listing_count(), 5);
+        assert_eq!(client.list_by_owner(&owner).len(), 5);
+    }
+
+    #[test]
+    fn test_batch_create_listings_emits_single_event() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        client.batch_create_listings(&owner, &make_entries(&env, &owner, 3));
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(events.events().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_batch_create_listings_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let entries = make_entries(&env, &owner, 1);
+        client.pause();
+        client.batch_create_listings(&owner, &entries);
+    }
+
+    #[test]
+    fn test_batch_validator_accepts_max_and_rejects_over() {
+        let env = Env::default();
+        let owner = Address::generate(&env);
+        let at_max = make_entries(&env, &owner, MAX_BATCH_SIZE);
+        assert_eq!(BatchValidator::validate(&at_max), Ok(()));
+        let over = make_entries(&env, &owner, MAX_BATCH_SIZE + 1);
+        assert_eq!(
+            BatchValidator::validate(&over),
+            Err(ContractError::BatchTooLarge)
+        );
+        let empty: Vec<IpEntry> = Vec::new(&env);
+        assert_eq!(
+            BatchValidator::validate(&empty),
+            Err(ContractError::BatchEmpty)
+        );
     }
 }

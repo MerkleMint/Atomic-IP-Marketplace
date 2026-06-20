@@ -98,6 +98,12 @@ function decodeSwapScVal(
     );
   }
 
+  // hold_until is Option<u64>: scValToNative returns null or BigInt.
+  const holdUntil =
+    native.hold_until === null || native.hold_until === undefined
+      ? null
+      : Number(native.hold_until);
+
   return {
     id: swapId,
     listing_id: Number(native.listing_id ?? 0),
@@ -109,6 +115,8 @@ function decodeSwapScVal(
     expires_at: Number(native.expires_at ?? 0),
     status,
     decryption_key: decryptionKey,
+    hold_until: holdUntil,
+    buyer_confirmed: Boolean(native.buyer_confirmed),
   };
 }
 
@@ -736,6 +744,309 @@ export async function setMerkleRoot(
         }),
         StellarSdk.nativeToScVal(listingId, { type: "u64" }),
         StellarSdk.xdr.ScVal.scvBytes(rootBytes)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+// ─── Dispute resolution ───────────────────────────────────────────────────────
+
+export interface DisputeRecord {
+  swap_id: number;
+  raised_by: string;
+  raised_at_ledger: number;
+  evidence_count: number;
+  outcome: "Pending" | "FavorBuyer" | "FavorSeller";
+  resolved_at_ledger: number | null;
+  vote_weight_buyer: string;
+  vote_weight_seller: string;
+  commit_deadline_ledger: number;
+  reveal_deadline_ledger: number;
+  appeal_deadline_ledger: number | null;
+  is_appealed: boolean;
+}
+
+export interface EvidenceItem {
+  submitter: string;
+  ipfs_hash: string;
+  submitted_at_ledger: number;
+}
+
+function decodeDisputeScVal(
+  scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined
+): DisputeRecord | null {
+  if (!scVal || scVal.switch().name === "scvVoid") return null;
+  const native = StellarSdk.scValToNative(scVal);
+  if (!native || typeof native !== "object") return null;
+
+  const outcome =
+    typeof native.outcome === "object" && native.outcome !== null
+      ? (native.outcome.tag as "Pending" | "FavorBuyer" | "FavorSeller")
+      : "Pending";
+
+  const toNum = (v: any) => (v != null ? Number(v) : null);
+
+  return {
+    swap_id: Number(native.swap_id ?? 0),
+    raised_by: String(native.raised_by ?? ""),
+    raised_at_ledger: Number(native.raised_at_ledger ?? 0),
+    evidence_count: Number(native.evidence_count ?? 0),
+    outcome,
+    resolved_at_ledger: toNum(native.resolved_at_ledger),
+    vote_weight_buyer: String(native.vote_weight_buyer ?? "0"),
+    vote_weight_seller: String(native.vote_weight_seller ?? "0"),
+    commit_deadline_ledger: Number(native.commit_deadline_ledger ?? 0),
+    reveal_deadline_ledger: Number(native.reveal_deadline_ledger ?? 0),
+    appeal_deadline_ledger: toNum(native.appeal_deadline_ledger),
+    is_appealed: Boolean(native.is_appealed),
+  };
+}
+
+export async function getDispute(swapId: number): Promise<DisputeRecord | null> {
+  const retval = await simulateView("get_dispute", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+  ]);
+  return decodeDisputeScVal(retval);
+}
+
+export async function getEvidence(
+  swapId: number,
+  index: number
+): Promise<EvidenceItem | null> {
+  const retval = await simulateView("get_evidence", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+    StellarSdk.nativeToScVal(index, { type: "u32" }),
+  ]);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+  const native = StellarSdk.scValToNative(retval);
+  if (!native || typeof native !== "object") return null;
+  const hashRaw = native.ipfs_hash;
+  const ipfsHash =
+    hashRaw instanceof Uint8Array || Buffer.isBuffer(hashRaw)
+      ? Buffer.from(hashRaw).toString("utf8")
+      : String(hashRaw ?? "");
+  return {
+    submitter: String(native.submitter ?? ""),
+    ipfs_hash: ipfsHash,
+    submitted_at_ledger: Number(native.submitted_at_ledger ?? 0),
+  };
+}
+
+export async function getArbiters(): Promise<string[]> {
+  const retval = await simulateView("get_arbiters", []);
+  if (!retval) return [];
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(String);
+}
+
+export async function getCurrentLedger(): Promise<number> {
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const ledger = await server.getLatestLedger();
+  return ledger.sequence;
+}
+
+export async function raiseDispute(
+  swapId: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "raise_dispute",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function submitEvidence(
+  swapId: number,
+  ipfsHash: string,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const hashBytes = Buffer.from(ipfsHash, "utf8");
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "submit_evidence",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }),
+        StellarSdk.xdr.ScVal.scvBytes(hashBytes)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Compute the commitment hash for the commitment-reveal voting pattern.
+ * commitment = sha256(vote_byte || utf8(salt))
+ * Returns a 32-byte Buffer.
+ */
+export async function computeVoteCommitment(
+  favorBuyer: boolean,
+  salt: string
+): Promise<Buffer> {
+  const voteByte = favorBuyer ? 0x01 : 0x00;
+  const saltBytes = Buffer.from(salt, "utf8");
+  const preimage = Buffer.concat([Buffer.from([voteByte]), saltBytes]);
+
+  const hashBuffer = await crypto.subtle.digest("SHA-256", preimage);
+  return Buffer.from(hashBuffer);
+}
+
+export async function commitVote(
+  swapId: number,
+  favorBuyer: boolean,
+  salt: string,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const commitment = await computeVoteCommitment(favorBuyer, salt);
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "commit_vote",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }),
+        StellarSdk.xdr.ScVal.scvBytes(commitment)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function revealVote(
+  swapId: number,
+  favorBuyer: boolean,
+  salt: string,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const saltBytes = Buffer.from(salt, "utf8");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "reveal_vote",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }),
+        StellarSdk.xdr.ScVal.scvBool(favorBuyer),
+        StellarSdk.xdr.ScVal.scvBytes(saltBytes)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function finalizeDispute(
+  swapId: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "finalize_dispute",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function appealDispute(
+  swapId: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID)
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "appeal_dispute",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        })
       )
     )
     .setTimeout(30)
