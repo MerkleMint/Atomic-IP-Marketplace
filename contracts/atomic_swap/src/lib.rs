@@ -2,12 +2,15 @@
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
-    Address, Bytes, Env,
+    Address, Bytes, BytesN, Env,
 };
 use zk_verifier::{ProofNode, ZkVerifierClient};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 const DEFAULT_DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
+const DEFAULT_COMMIT_WINDOW_LEDGERS: u32 = 17_280;
+const DEFAULT_REVEAL_WINDOW_LEDGERS: u32 = 17_280;
+const DEFAULT_APPEAL_WINDOW_LEDGERS: u32 = 17_280;
 
 //Added enum
 
@@ -50,6 +53,32 @@ pub enum ContractError {
     /// Buyer's token allowance for this contract is below usdc_amount.
     /// Buyer must call `token.approve(contract, amount)` before initiating.
     InsufficientAllowance = 24,
+    /// Caller is not a registered active arbiter.
+    NotAnArbiter = 25,
+    /// Arbiter is a party to the swap and cannot vote (conflict of interest).
+    ArbiterConflictOfInterest = 26,
+    /// Arbiter has already committed a vote for this dispute.
+    ArbiterAlreadyCommitted = 27,
+    /// Arbiter has already revealed their vote for this dispute.
+    ArbiterAlreadyRevealed = 28,
+    /// No vote commitment found for this arbiter; commit before revealing.
+    VoteCommitNotFound = 29,
+    /// Revealed vote and salt do not match the stored commitment.
+    InvalidVoteReveal = 30,
+    /// The commit window for this dispute has already expired.
+    CommitWindowExpired = 31,
+    /// The reveal window has not yet opened (commit deadline not reached).
+    RevealWindowNotOpen = 32,
+    /// The reveal window for this dispute has expired.
+    RevealWindowExpired = 33,
+    /// Dispute outcome is already set; cannot finalize again.
+    DisputeAlreadyFinalized = 34,
+    /// The appeal window for this dispute has expired.
+    AppealWindowExpired = 35,
+    /// This dispute has already been appealed.
+    DisputeAlreadyAppealed = 36,
+    /// No Dispute record found for this swap_id.
+    SwapDisputeNotFound = 37,
 }
 
 #[contracttype]
@@ -90,6 +119,71 @@ pub struct Swap {
     pub confirmed_at_ledger: Option<u32>,
 }
 
+/// Outcome of a dispute after arbiter voting or admin resolution.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeOutcome {
+    Pending,
+    FavorBuyer,
+    FavorSeller,
+}
+
+/// Compound key for per-arbiter, per-dispute vote storage.
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeVoteKey {
+    pub swap_id: u64,
+    pub arbiter: Address,
+}
+
+/// Compound key for per-evidence item storage.
+#[contracttype]
+#[derive(Clone)]
+pub struct EvidenceKey {
+    pub swap_id: u64,
+    pub index: u32,
+}
+
+/// Full dispute record stored on-chain when a buyer raises a dispute.
+#[contracttype]
+#[derive(Clone)]
+pub struct Dispute {
+    pub swap_id: u64,
+    pub raised_by: Address,
+    pub raised_at_ledger: u32,
+    pub evidence_count: u32,
+    pub outcome: DisputeOutcome,
+    pub resolved_at_ledger: Option<u32>,
+    /// Sum of revealed voting weights favouring the buyer.
+    pub vote_weight_buyer: i128,
+    /// Sum of revealed voting weights favouring the seller.
+    pub vote_weight_seller: i128,
+    /// Arbiters must commit a blinded vote before this ledger.
+    pub commit_deadline_ledger: u32,
+    /// Arbiters must reveal their vote between commit_deadline and this ledger.
+    pub reveal_deadline_ledger: u32,
+    /// Set after finalization; buyer may appeal before this ledger.
+    pub appeal_deadline_ledger: Option<u32>,
+    pub is_appealed: bool,
+}
+
+/// Metadata for a registered arbiter.
+#[contracttype]
+#[derive(Clone)]
+pub struct ArbiterInfo {
+    pub weight: i128,
+    pub is_active: bool,
+}
+
+/// A single piece of evidence submitted by a swap party.
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeEvidenceItem {
+    pub submitter: Address,
+    pub ipfs_hash: Bytes,
+    pub submitted_at_ledger: u32,
+}
+
 #[contracttype]
 pub enum DataKey {
     Swap(u64),
@@ -102,6 +196,25 @@ pub enum DataKey {
     Paused,
     DisputeWindowLedgers,
     AllowedToken(Address),
+    // ── Dispute resolution system ──────────────────────────────────────────────
+    /// Dispute record keyed by swap_id.
+    Dispute(u64),
+    /// Individual evidence items keyed by (swap_id, index).
+    EvidenceItem(EvidenceKey),
+    /// Registered arbiter metadata.
+    ArbiterEntry(Address),
+    /// Ordered list of all arbiter addresses.
+    ArbiterList,
+    /// Blinded vote commitment keyed by (swap_id, arbiter).
+    VoteCommit(DisputeVoteKey),
+    /// Revealed vote (bool) keyed by (swap_id, arbiter).
+    VoteRevealed(DisputeVoteKey),
+    /// Ledger window for the commit phase.
+    CommitWindowLedgers,
+    /// Ledger window for the reveal phase (starts after commit deadline).
+    RevealWindowLedgers,
+    /// Ledger window during which the buyer may appeal a finalized dispute.
+    AppealWindowLedgers,
 }
 
 /// Event lifecycle:
@@ -248,6 +361,64 @@ pub struct SwapReleaseFailed {
     /// The ContractError code that caused the failure.
     pub error_code: u32,
     pub seller: Address,
+}
+
+/// Emitted when an arbiter is registered or their weight updated.
+#[contractevent]
+pub struct ArbiterRegistered {
+    #[topic]
+    pub arbiter: Address,
+    pub weight: i128,
+}
+
+/// Emitted when an arbiter is deactivated (soft-removed).
+#[contractevent]
+pub struct ArbiterDeactivated {
+    #[topic]
+    pub arbiter: Address,
+}
+
+/// Emitted when a party submits evidence for a dispute.
+#[contractevent]
+pub struct EvidenceSubmitted {
+    #[topic]
+    pub swap_id: u64,
+    #[topic]
+    pub submitter: Address,
+    pub evidence_index: u32,
+}
+
+/// Emitted when an arbiter commits a blinded vote.
+/// Does NOT reveal who voted for what — anonymity is preserved until reveal.
+#[contractevent]
+pub struct VoteCommitted {
+    #[topic]
+    pub swap_id: u64,
+}
+
+/// Emitted when an arbiter reveals their vote.
+#[contractevent]
+pub struct VoteRevealed {
+    #[topic]
+    pub swap_id: u64,
+    pub arbiter: Address,
+    pub favor_buyer: bool,
+}
+
+/// Emitted when a dispute is finalized based on arbiter vote weights.
+#[contractevent]
+pub struct DisputeFinalized {
+    #[topic]
+    pub swap_id: u64,
+    pub favor_buyer: bool,
+}
+
+/// Emitted when the buyer appeals a finalized dispute.
+#[contractevent]
+pub struct DisputeAppealed {
+    #[topic]
+    pub swap_id: u64,
+    pub appellant: Address,
 }
 
 /// Discriminates the phase in which a swap failed, for detailed error recovery.
@@ -926,6 +1097,40 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
         );
 
+        // Create the Dispute record with commit/reveal windows.
+        let commit_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CommitWindowLedgers)
+            .unwrap_or(DEFAULT_COMMIT_WINDOW_LEDGERS);
+        let reveal_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevealWindowLedgers)
+            .unwrap_or(DEFAULT_REVEAL_WINDOW_LEDGERS);
+        let current_ledger = env.ledger().sequence();
+        let dispute = Dispute {
+            swap_id,
+            raised_by: swap.buyer.clone(),
+            raised_at_ledger: current_ledger,
+            evidence_count: 0,
+            outcome: DisputeOutcome::Pending,
+            resolved_at_ledger: None,
+            vote_weight_buyer: 0,
+            vote_weight_seller: 0,
+            commit_deadline_ledger: current_ledger + commit_window,
+            reveal_deadline_ledger: current_ledger + commit_window + reveal_window,
+            appeal_deadline_ledger: None,
+            is_appealed: false,
+        };
+        let dispute_key = DataKey::Dispute(swap_id);
+        env.storage().persistent().set(&dispute_key, &dispute);
+        env.storage().persistent().extend_ttl(
+            &dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
         DisputeRaised {
             swap_id,
             buyer: swap.buyer,
@@ -951,61 +1156,7 @@ impl AtomicSwap {
             env.panic_with_error(ContractError::SwapNotDisputed);
         }
 
-        let token_client = token::Client::new(&env, &swap.usdc_token);
-        let contract_addr = env.current_contract_address();
-
-        if favor_buyer {
-            token_client.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
-            swap.status = SwapStatus::ResolvedBuyer;
-        } else {
-            let config: Config = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Config)
-                .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
-            // Extend TTL on every state-mutating call to prevent expiration
-            env.storage().persistent().extend_ttl(
-                &DataKey::Admin,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
-            env.storage().persistent().extend_ttl(
-                &DataKey::Config,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
-
-            // Get listing to read royalty info
-            let listing = IpRegistryClient::new(&env, &config.ip_registry)
-                .get_listing(&swap.listing_id)
-                .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
-
-            // Deduct protocol fee. For very small amounts where the fee would
-            // truncate to zero, skip the fee entirely rather than panicking and
-            // permanently blocking dispute resolution.
-            let fee = {
-                let product = swap.usdc_amount.checked_mul(config.fee_bps as i128);
-                match product {
-                    Some(p) if p / 10_000 > 0 => p / 10_000,
-                    _ => 0,
-                }
-            };
-            let mut seller_amount = swap.usdc_amount - fee;
-            if fee > 0 {
-                token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
-            }
-
-            // Royalty is calculated on the gross sale price (swap.usdc_amount), not the
-            // post-fee amount, so royalty semantics are independent of the protocol fee.
-            let royalty: i128 = (swap.usdc_amount * listing.royalty_bps as i128) / 10_000;
-            if royalty > 0 {
-                token_client.transfer(&contract_addr, &listing.royalty_recipient, &royalty);
-                seller_amount -= royalty;
-            }
-
-            token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
-            swap.status = SwapStatus::ResolvedSeller;
-        }
+        Self::distribute_dispute_funds(&env, &mut swap, favor_buyer);
 
         DisputeResolved {
             swap_id,
@@ -1254,6 +1405,516 @@ impl AtomicSwap {
         }
         .publish(&env);
     }
+
+    // ── Dispute resolution helpers ─────────────────────────────────────────────
+
+    fn require_admin(env: &Env) -> Address {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        admin
+    }
+
+    /// Shared fund-distribution logic used by both resolve_dispute (admin) and
+    /// finalize_dispute (arbiter vote). Returns true when funds go to buyer.
+    fn distribute_dispute_funds(env: &Env, swap: &mut Swap, favor_buyer: bool) {
+        let token_client = token::Client::new(env, &swap.usdc_token);
+        let contract_addr = env.current_contract_address();
+
+        if favor_buyer {
+            token_client.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
+            swap.status = SwapStatus::ResolvedBuyer;
+        } else {
+            let config: Config = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Config)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+            env.storage().persistent().extend_ttl(
+                &DataKey::Admin,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::Config,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+
+            let listing = IpRegistryClient::new(env, &config.ip_registry)
+                .get_listing(&swap.listing_id)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+            let fee = {
+                let product = swap.usdc_amount.checked_mul(config.fee_bps as i128);
+                match product {
+                    Some(p) if p / 10_000 > 0 => p / 10_000,
+                    _ => 0,
+                }
+            };
+            let mut seller_amount = swap.usdc_amount - fee;
+            if fee > 0 {
+                token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
+            }
+
+            let royalty: i128 = (swap.usdc_amount * listing.royalty_bps as i128) / 10_000;
+            if royalty > 0 {
+                token_client.transfer(&contract_addr, &listing.royalty_recipient, &royalty);
+                seller_amount -= royalty;
+            }
+
+            token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
+            swap.status = SwapStatus::ResolvedSeller;
+        }
+    }
+
+    // ── Arbiter registry ───────────────────────────────────────────────────────
+
+    /// Register or update an arbiter's voting weight. Admin only.
+    pub fn register_arbiter(env: Env, arbiter: Address, weight: i128) {
+        Self::require_admin(&env);
+        if weight <= 0 {
+            env.panic_with_error(ContractError::InvalidAmount);
+        }
+
+        let info = ArbiterInfo { weight, is_active: true };
+        let entry_key = DataKey::ArbiterEntry(arbiter.clone());
+        env.storage().persistent().set(&entry_key, &info);
+        env.storage().persistent().extend_ttl(
+            &entry_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        let list_key = DataKey::ArbiterList;
+        let mut list: soroban_sdk::Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        let mut found = false;
+        for i in 0..list.len() {
+            if list.get(i).unwrap() == arbiter {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            list.push_back(arbiter.clone());
+        }
+        env.storage().persistent().set(&list_key, &list);
+        env.storage().persistent().extend_ttl(
+            &list_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        ArbiterRegistered { arbiter, weight }.publish(&env);
+    }
+
+    /// Deactivate an arbiter so they can no longer vote. Admin only.
+    pub fn deactivate_arbiter(env: Env, arbiter: Address) {
+        Self::require_admin(&env);
+
+        let entry_key = DataKey::ArbiterEntry(arbiter.clone());
+        let mut info: ArbiterInfo = env
+            .storage()
+            .persistent()
+            .get(&entry_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotAnArbiter));
+        info.is_active = false;
+        env.storage().persistent().set(&entry_key, &info);
+        env.storage().persistent().extend_ttl(
+            &entry_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        ArbiterDeactivated { arbiter }.publish(&env);
+    }
+
+    // ── Dispute window setters ─────────────────────────────────────────────────
+
+    pub fn set_commit_window(env: Env, ledgers: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CommitWindowLedgers, &ledgers);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CommitWindowLedgers,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
+    pub fn set_reveal_window(env: Env, ledgers: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RevealWindowLedgers, &ledgers);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RevealWindowLedgers,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
+    pub fn set_appeal_window(env: Env, ledgers: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AppealWindowLedgers, &ledgers);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AppealWindowLedgers,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
+    // ── Evidence submission ────────────────────────────────────────────────────
+
+    /// Submit an IPFS-addressed evidence item for a disputed swap.
+    /// Only the swap buyer or seller may submit evidence.
+    pub fn submit_evidence(env: Env, swap_id: u64, submitter: Address, ipfs_hash: Bytes) {
+        submitter.require_auth();
+
+        let swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Swap(swap_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Disputed {
+            env.panic_with_error(ContractError::SwapNotDisputed);
+        }
+        if submitter != swap.buyer && submitter != swap.seller {
+            env.panic_with_error(ContractError::ArbiterConflictOfInterest);
+        }
+
+        let dispute_key = DataKey::Dispute(swap_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+
+        if env.ledger().sequence() > dispute.reveal_deadline_ledger {
+            env.panic_with_error(ContractError::CommitWindowExpired);
+        }
+
+        let evidence_index = dispute.evidence_count;
+        let evidence = DisputeEvidenceItem {
+            submitter: submitter.clone(),
+            ipfs_hash,
+            submitted_at_ledger: env.ledger().sequence(),
+        };
+        let ev_key = DataKey::EvidenceItem(EvidenceKey { swap_id, index: evidence_index });
+        env.storage().persistent().set(&ev_key, &evidence);
+        env.storage().persistent().extend_ttl(
+            &ev_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        dispute.evidence_count += 1;
+        env.storage().persistent().set(&dispute_key, &dispute);
+        env.storage().persistent().extend_ttl(
+            &dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        EvidenceSubmitted { swap_id, submitter, evidence_index }.publish(&env);
+    }
+
+    // ── Commitment-reveal voting ───────────────────────────────────────────────
+
+    /// Phase 1: arbiter submits a blinded commitment = sha256(vote_byte || salt).
+    /// Call before commit_deadline_ledger. Commitment hides the vote until reveal phase.
+    pub fn commit_vote(
+        env: Env,
+        swap_id: u64,
+        arbiter: Address,
+        commitment: BytesN<32>,
+    ) {
+        arbiter.require_auth();
+
+        let arbiter_info: ArbiterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArbiterEntry(arbiter.clone()))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotAnArbiter));
+        if !arbiter_info.is_active {
+            env.panic_with_error(ContractError::NotAnArbiter);
+        }
+
+        let swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Swap(swap_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Disputed {
+            env.panic_with_error(ContractError::SwapNotDisputed);
+        }
+        if arbiter == swap.buyer || arbiter == swap.seller {
+            env.panic_with_error(ContractError::ArbiterConflictOfInterest);
+        }
+
+        let dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(swap_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+        if dispute.outcome != DisputeOutcome::Pending {
+            env.panic_with_error(ContractError::DisputeAlreadyFinalized);
+        }
+        if env.ledger().sequence() > dispute.commit_deadline_ledger {
+            env.panic_with_error(ContractError::CommitWindowExpired);
+        }
+
+        let commit_key = DataKey::VoteCommit(DisputeVoteKey { swap_id, arbiter: arbiter.clone() });
+        if env.storage().persistent().has(&commit_key) {
+            env.panic_with_error(ContractError::ArbiterAlreadyCommitted);
+        }
+
+        env.storage().persistent().set(&commit_key, &commitment);
+        env.storage().persistent().extend_ttl(
+            &commit_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Emit without naming the arbiter — preserves anonymity during commit phase.
+        VoteCommitted { swap_id }.publish(&env);
+    }
+
+    /// Phase 2: arbiter reveals their vote and salt.
+    /// Contract verifies sha256(vote_byte || salt) == stored commitment.
+    /// Call between commit_deadline_ledger and reveal_deadline_ledger.
+    pub fn reveal_vote(
+        env: Env,
+        swap_id: u64,
+        arbiter: Address,
+        favor_buyer: bool,
+        salt: Bytes,
+    ) {
+        arbiter.require_auth();
+
+        let arbiter_info: ArbiterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArbiterEntry(arbiter.clone()))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotAnArbiter));
+        if !arbiter_info.is_active {
+            env.panic_with_error(ContractError::NotAnArbiter);
+        }
+
+        let dispute_key = DataKey::Dispute(swap_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+        if dispute.outcome != DisputeOutcome::Pending {
+            env.panic_with_error(ContractError::DisputeAlreadyFinalized);
+        }
+
+        let current = env.ledger().sequence();
+        if current <= dispute.commit_deadline_ledger {
+            env.panic_with_error(ContractError::RevealWindowNotOpen);
+        }
+        if current > dispute.reveal_deadline_ledger {
+            env.panic_with_error(ContractError::RevealWindowExpired);
+        }
+
+        let commit_key = DataKey::VoteCommit(DisputeVoteKey { swap_id, arbiter: arbiter.clone() });
+        let stored_commitment: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&commit_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::VoteCommitNotFound));
+
+        let reveal_key = DataKey::VoteRevealed(DisputeVoteKey { swap_id, arbiter: arbiter.clone() });
+        if env.storage().persistent().has(&reveal_key) {
+            env.panic_with_error(ContractError::ArbiterAlreadyRevealed);
+        }
+
+        // Verify commitment: sha256(vote_byte || salt) must equal stored commitment.
+        let mut preimage = Bytes::new(&env);
+        preimage.push_back(if favor_buyer { 1u8 } else { 0u8 });
+        for i in 0..salt.len() {
+            preimage.push_back(salt.get(i).unwrap());
+        }
+        let computed: BytesN<32> = env.crypto().sha256(&preimage);
+        if computed != stored_commitment {
+            env.panic_with_error(ContractError::InvalidVoteReveal);
+        }
+
+        env.storage().persistent().set(&reveal_key, &favor_buyer);
+        env.storage().persistent().extend_ttl(
+            &reveal_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        if favor_buyer {
+            dispute.vote_weight_buyer = dispute
+                .vote_weight_buyer
+                .saturating_add(arbiter_info.weight);
+        } else {
+            dispute.vote_weight_seller = dispute
+                .vote_weight_seller
+                .saturating_add(arbiter_info.weight);
+        }
+        env.storage().persistent().set(&dispute_key, &dispute);
+        env.storage().persistent().extend_ttl(
+            &dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        VoteRevealed { swap_id, arbiter, favor_buyer }.publish(&env);
+    }
+
+    // ── Finalize / appeal ──────────────────────────────────────────────────────
+
+    /// Finalize a dispute after the reveal window closes.
+    /// Tallies revealed vote weights and distributes funds accordingly.
+    /// Ties resolve in the buyer's favour (consumer protection default).
+    /// Anyone may call this; no auth required.
+    pub fn finalize_dispute(env: Env, swap_id: u64) {
+        let dispute_key = DataKey::Dispute(swap_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+        if dispute.outcome != DisputeOutcome::Pending {
+            env.panic_with_error(ContractError::DisputeAlreadyFinalized);
+        }
+        if env.ledger().sequence() <= dispute.reveal_deadline_ledger {
+            env.panic_with_error(ContractError::RevealWindowNotOpen);
+        }
+
+        let key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Disputed {
+            env.panic_with_error(ContractError::SwapNotDisputed);
+        }
+
+        // Ties default to buyer (consumer protection).
+        let favor_buyer = dispute.vote_weight_buyer >= dispute.vote_weight_seller;
+
+        Self::distribute_dispute_funds(&env, &mut swap, favor_buyer);
+
+        let current = env.ledger().sequence();
+        let appeal_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AppealWindowLedgers)
+            .unwrap_or(DEFAULT_APPEAL_WINDOW_LEDGERS);
+        dispute.outcome = if favor_buyer {
+            DisputeOutcome::FavorBuyer
+        } else {
+            DisputeOutcome::FavorSeller
+        };
+        dispute.resolved_at_ledger = Some(current);
+        dispute.appeal_deadline_ledger = Some(current + appeal_window);
+
+        env.storage().persistent().set(&key, &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().set(&dispute_key, &dispute);
+        env.storage().persistent().extend_ttl(
+            &dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        DisputeFinalized { swap_id, favor_buyer }.publish(&env);
+    }
+
+    /// Appeal a finalized dispute within the appeal window.
+    /// Only the buyer may appeal. This emits an event signalling admin review;
+    /// funds are not automatically reversed — admin calls resolve_dispute if
+    /// the appeal succeeds.
+    pub fn appeal_dispute(env: Env, swap_id: u64, appellant: Address) {
+        appellant.require_auth();
+
+        let swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Swap(swap_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if appellant != swap.buyer {
+            env.panic_with_error(ContractError::ArbiterConflictOfInterest);
+        }
+
+        let dispute_key = DataKey::Dispute(swap_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+        if dispute.outcome == DisputeOutcome::Pending {
+            env.panic_with_error(ContractError::SwapNotDisputed);
+        }
+        if dispute.is_appealed {
+            env.panic_with_error(ContractError::DisputeAlreadyAppealed);
+        }
+        let deadline = dispute.appeal_deadline_ledger.unwrap_or(0);
+        if env.ledger().sequence() > deadline {
+            env.panic_with_error(ContractError::AppealWindowExpired);
+        }
+
+        dispute.is_appealed = true;
+        env.storage().persistent().set(&dispute_key, &dispute);
+        env.storage().persistent().extend_ttl(
+            &dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        DisputeAppealed { swap_id, appellant }.publish(&env);
+    }
+
+    // ── Dispute read functions ─────────────────────────────────────────────────
+
+    pub fn get_dispute(env: Env, swap_id: u64) -> Option<Dispute> {
+        let key = DataKey::Dispute(swap_id);
+        let dispute: Option<Dispute> = env.storage().persistent().get(&key);
+        if dispute.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+        }
+        dispute
+    }
+
+    pub fn get_evidence(env: Env, swap_id: u64, index: u32) -> Option<DisputeEvidenceItem> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EvidenceItem(EvidenceKey { swap_id, index }))
+    }
+
+    pub fn get_arbiters(env: Env) -> soroban_sdk::Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArbiterList)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+    }
 }
 
 #[cfg(test)]
@@ -1262,7 +1923,7 @@ mod test {
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger as _},
-        token, Bytes, Env, IntoVal, TryFromVal, Vec,
+        token, Bytes, BytesN, Env, IntoVal, TryFromVal, Vec,
     };
     use zk_verifier::{ProofNode, ZkVerifier, ZkVerifierClient};
 
@@ -3703,6 +4364,400 @@ mod test {
         // Funds must not move
         assert_eq!(usdc_client.balance(&contract_id), 500);
         assert_eq!(usdc_client.balance(&buyer), 0);
+    }
+
+    // ── Dispute resolution system tests ──────────────────────────────────────
+
+    fn make_commitment(env: &Env, favor_buyer: bool, salt: &Bytes) -> BytesN<32> {
+        let mut preimage = Bytes::new(env);
+        preimage.push_back(if favor_buyer { 1u8 } else { 0u8 });
+        for i in 0..salt.len() {
+            preimage.push_back(salt.get(i).unwrap());
+        }
+        env.crypto().sha256(&preimage)
+    }
+
+    fn setup_arbiter(client: &AtomicSwapClient, arbiter: &Address, weight: i128) {
+        client.register_arbiter(arbiter, &weight);
+    }
+
+    #[test]
+    fn test_raise_dispute_creates_dispute_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_dispute_window(&100u32);
+        client.set_commit_window(&50u32);
+        client.set_reveal_window(&50u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).expect("Dispute record must exist");
+        assert_eq!(dispute.swap_id, swap_id);
+        assert_eq!(dispute.raised_by, buyer);
+        assert_eq!(dispute.outcome, DisputeOutcome::Pending);
+        assert_eq!(dispute.evidence_count, 0);
+        assert!(!dispute.is_appealed);
+    }
+
+    #[test]
+    fn test_register_and_deactivate_arbiter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_, _, _, _, client, _, _) = setup_full(&env, &buyer, &seller, 500, 1);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+
+        let arbiters = client.get_arbiters();
+        assert_eq!(arbiters.len(), 1);
+
+        client.deactivate_arbiter(&arbiter);
+        // Still in list but is_active=false; commit_vote should reject it
+    }
+
+    #[test]
+    fn test_submit_evidence_by_buyer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let hash = Bytes::from_slice(&env, b"QmTestEvidenceHash");
+        client.submit_evidence(&swap_id, &buyer, &hash);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.evidence_count, 1);
+
+        let ev = client.get_evidence(&swap_id, &0u32).expect("evidence must exist");
+        assert_eq!(ev.submitter, buyer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #13)")]
+    fn test_submit_evidence_rejected_on_non_disputed_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        // swap is Completed, not Disputed
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        client.submit_evidence(&swap_id, &buyer, &hash);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #25)")]
+    fn test_commit_vote_rejected_for_non_arbiter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let non_arbiter = Address::generate(&env);
+        let salt = Bytes::from_slice(&env, b"salt");
+        let commit = make_commitment(&env, true, &salt);
+        client.commit_vote(&swap_id, &non_arbiter, &commit);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #26)")]
+    fn test_commit_vote_rejected_for_buyer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        // Register buyer as arbiter — conflict of interest should be caught
+        client.register_arbiter(&buyer, &100i128);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let salt = Bytes::from_slice(&env, b"salt");
+        let commit = make_commitment(&env, true, &salt);
+        client.commit_vote(&swap_id, &buyer, &commit);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #27)")]
+    fn test_commit_vote_rejected_on_double_commit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let salt = Bytes::from_slice(&env, b"salt");
+        let commit = make_commitment(&env, true, &salt);
+        client.commit_vote(&swap_id, &arbiter, &commit);
+        // Second commit must fail
+        client.commit_vote(&swap_id, &arbiter, &commit);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #30)")]
+    fn test_reveal_vote_rejected_on_wrong_salt() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let real_salt = Bytes::from_slice(&env, b"correct-salt");
+        let commit = make_commitment(&env, true, &real_salt);
+        client.commit_vote(&swap_id, &arbiter, &commit);
+
+        // Advance past commit deadline
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+
+        // Reveal with wrong salt — must fail
+        let wrong_salt = Bytes::from_slice(&env, b"wrong-salt");
+        client.reveal_vote(&swap_id, &arbiter, &true, &wrong_salt);
+    }
+
+    #[test]
+    fn test_full_dispute_lifecycle_arbiter_votes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        // Short windows so we can advance past them easily
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let arbiter1 = Address::generate(&env);
+        let arbiter2 = Address::generate(&env);
+        client.register_arbiter(&arbiter1, &60i128);
+        client.register_arbiter(&arbiter2, &40i128);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        // Submit evidence
+        let hash = Bytes::from_slice(&env, b"QmEvidence");
+        client.submit_evidence(&swap_id, &buyer, &hash);
+
+        // Commit phase: both arbiters vote favour_buyer=true
+        let salt1 = Bytes::from_slice(&env, b"salt1");
+        let salt2 = Bytes::from_slice(&env, b"salt2");
+        let commit1 = make_commitment(&env, true, &salt1);
+        let commit2 = make_commitment(&env, false, &salt2);
+        client.commit_vote(&swap_id, &arbiter1, &commit1);
+        client.commit_vote(&swap_id, &arbiter2, &commit2);
+
+        // Advance past commit deadline
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+
+        // Reveal phase
+        client.reveal_vote(&swap_id, &arbiter1, &true, &salt1);
+        client.reveal_vote(&swap_id, &arbiter2, &false, &salt2);
+
+        // Advance past reveal deadline
+        env.ledger().with_mut(|li| li.sequence_number += 10);
+
+        // Finalize — arbiter1 weight 60 (buyer) beats arbiter2 weight 40 (seller)
+        client.finalize_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
+        assert_eq!(dispute.vote_weight_buyer, 60);
+        assert_eq!(dispute.vote_weight_seller, 40);
+        // Buyer should be refunded
+        assert_eq!(usdc_client.balance(&buyer), 500);
+        assert_eq!(usdc_client.balance(&seller), 0);
+    }
+
+    #[test]
+    fn test_finalize_dispute_tie_favours_buyer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        // No arbiters vote — both weights stay 0, tie → buyer wins
+        env.ledger().with_mut(|li| li.sequence_number += 21);
+        client.finalize_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
+        assert_eq!(usdc_client.balance(&buyer), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #32)")]
+    fn test_finalize_dispute_rejected_before_reveal_deadline() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&20u32);
+        client.set_reveal_window(&20u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        // Only past commit window, not reveal window
+        env.ledger().with_mut(|li| li.sequence_number += 25);
+        // Still inside reveal window — must fail
+        client.finalize_dispute(&swap_id);
+    }
+
+    #[test]
+    fn test_appeal_dispute_within_window() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&20u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        // Fast-forward past both windows to finalize
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        // Appeal within window
+        client.appeal_dispute(&swap_id, &buyer);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert!(dispute.is_appealed);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #36)")]
+    fn test_appeal_dispute_rejected_on_double_appeal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&20u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        client.appeal_dispute(&swap_id, &buyer);
+        // Second appeal must fail
+        client.appeal_dispute(&swap_id, &buyer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #35)")]
+    fn test_appeal_dispute_rejected_after_window_expires() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&5u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        // Advance past appeal window
+        env.ledger().with_mut(|li| li.sequence_number += 6);
+        client.appeal_dispute(&swap_id, &buyer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #28)")]
+    fn test_reveal_vote_rejected_on_double_reveal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&20u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let salt = Bytes::from_slice(&env, b"unique-salt");
+        let commit = make_commitment(&env, true, &salt);
+        client.commit_vote(&swap_id, &arbiter, &commit);
+
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.reveal_vote(&swap_id, &arbiter, &true, &salt);
+        // Second reveal must fail
+        client.reveal_vote(&swap_id, &arbiter, &true, &salt);
     }
 
     /// InsufficientAllowance (error #24) returns the correct error and leaves no
