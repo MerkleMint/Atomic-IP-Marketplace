@@ -829,6 +829,21 @@ export async function updateAtomicSwapConfig(
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
   if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  
+  // Input validation
+  if (feeBps < 0 || feeBps > 10000) {
+    throw new Error("Fee basis points must be between 0 and 10000 (0-100%)");
+  }
+  if (!feeRecipient || !feeRecipient.trim()) {
+    throw new Error("Fee recipient address is required");
+  }
+  if (!feeRecipient.startsWith('G') || feeRecipient.length !== 56) {
+    throw new Error("Invalid Stellar address format");
+  }
+  if (cancelDelaySecs < 0) {
+    throw new Error("Cancel delay must be non-negative");
+  }
+  
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const sourceAccount = await server.getAccount(wallet.address);
   const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);

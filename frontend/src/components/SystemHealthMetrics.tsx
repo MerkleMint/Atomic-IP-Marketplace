@@ -28,7 +28,13 @@ function SystemHealthMetrics() {
       const listingCount = await getListingCount();
       
       // Get audit logs for swap statistics
-      const logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
+      let logs: any[] = [];
+      try {
+        logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
+      } catch (err) {
+        console.error('Failed to load audit logs:', err);
+        logs = [];
+      }
       
       const completedSwaps = logs.filter((log: any) => 
         log.action === 'complete_swap' || log.action === 'release_to_seller'
@@ -39,7 +45,13 @@ function SystemHealthMetrics() {
       ).length;
 
       // Get fee proposals for timelock ops
-      const feeProposals = JSON.parse(localStorage.getItem('feeProposals') || '[]');
+      let feeProposals: any[] = [];
+      try {
+        feeProposals = JSON.parse(localStorage.getItem('feeProposals') || '[]');
+      } catch (err) {
+        console.error('Failed to load fee proposals:', err);
+        feeProposals = [];
+      }
       const pendingTimelockOps = feeProposals.filter((p: any) => p.status === 'pending').length;
 
       setMetrics({
