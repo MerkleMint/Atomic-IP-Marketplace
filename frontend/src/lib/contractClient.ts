@@ -1096,3 +1096,93 @@ export async function verifyPartialProof(
   const native = StellarSdk.scValToNative(retval);
   return Boolean(native);
 }
+
+// ─── Admin Functions ─────────────────────────────────────────────────────────────
+
+export async function pauseAtomicSwap(
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(contract.call("pause"))
+    .setTimeout(30)
+    .build();
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function unpauseAtomicSwap(
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(contract.call("unpause"))
+    .setTimeout(30)
+    .build();
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function updateAtomicSwapConfig(
+  feeBps: number,
+  feeRecipient: string,
+  cancelDelaySecs: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  
+  // Input validation
+  if (feeBps < 0 || feeBps > 10000) {
+    throw new Error("Fee basis points must be between 0 and 10000 (0-100%)");
+  }
+  if (!feeRecipient || !feeRecipient.trim()) {
+    throw new Error("Fee recipient address is required");
+  }
+  if (!feeRecipient.startsWith('G') || feeRecipient.length !== 56) {
+    throw new Error("Invalid Stellar address format");
+  }
+  if (cancelDelaySecs < 0) {
+    throw new Error("Cancel delay must be non-negative");
+  }
+  
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "update_config",
+        StellarSdk.nativeToScVal(feeBps, { type: "u32" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(feeRecipient), { type: "address" }),
+        StellarSdk.nativeToScVal(cancelDelaySecs, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function getAtomicSwapConfig(): Promise<any> {
+  const retval = await simulateView("get_config", []);
+  if (!retval) return null;
+  return StellarSdk.scValToNative(retval);
+}
+
+export async function isAtomicSwapPaused(): Promise<boolean> {
+  const retval = await simulateView("is_paused", []);
+  if (!retval) return false;
+  return Boolean(StellarSdk.scValToNative(retval));
+}
