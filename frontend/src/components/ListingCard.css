@@ -225,3 +225,17 @@
 .lc__merkle-toggle:hover {
   color: #574fd6;
 }
+.lc__version-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: #6c63ff;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  line-height: 1.4;
+}
+
+.lc__versions {
+  border-top: 1px solid #f0f0f0;
+  padding-top: 0.5rem;
+}
