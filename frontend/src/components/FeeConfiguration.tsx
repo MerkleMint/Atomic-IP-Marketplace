@@ -4,10 +4,9 @@ import { useWallet } from '../context/WalletContext';
 import { updateAtomicSwapConfig, getAtomicSwapConfig } from '../lib/contractClient';
 import { FeeUpdateProposal } from '../lib/adminTypes';
 
-const GOVERNANCE_ADDRESSES: string[] = [
-  // Add governance addresses here
-  // 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-];
+const GOVERNANCE_ADDRESSES: string[] = (
+  (import.meta.env.VITE_GOVERNANCE_ADDRESSES as string) || ''
+).split(',').map((addr: string) => addr.trim()).filter(Boolean);
 
 const REQUIRED_APPROVALS = 2;
 
@@ -48,15 +47,24 @@ function FeeConfiguration() {
   };
 
   const loadProposals = () => {
-    const stored = localStorage.getItem('feeProposals');
-    if (stored) {
-      setProposals(JSON.parse(stored));
+    try {
+      const stored = localStorage.getItem('feeProposals');
+      if (stored) {
+        setProposals(JSON.parse(stored));
+      }
+    } catch (err) {
+      console.error('Failed to load proposals:', err);
+      setProposals([]);
     }
   };
 
   const saveProposals = (newProposals: FeeUpdateProposal[]) => {
-    localStorage.setItem('feeProposals', JSON.stringify(newProposals));
-    setProposals(newProposals);
+    try {
+      localStorage.setItem('feeProposals', JSON.stringify(newProposals));
+      setProposals(newProposals);
+    } catch (err) {
+      console.error('Failed to save proposals:', err);
+    }
   };
 
   const createProposal = async () => {
@@ -187,9 +195,13 @@ function FeeConfiguration() {
       details,
     };
     
-    const logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
-    logs.unshift(auditLog);
-    localStorage.setItem('adminAuditLogs', JSON.stringify(logs.slice(0, 100)));
+    try {
+      const logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
+      logs.unshift(auditLog);
+      localStorage.setItem('adminAuditLogs', JSON.stringify(logs.slice(0, 100)));
+    } catch (err) {
+      console.error('Failed to save audit log:', err);
+    }
   };
 
   const isGovernanceMember = wallet?.address && GOVERNANCE_ADDRESSES.includes(wallet.address);

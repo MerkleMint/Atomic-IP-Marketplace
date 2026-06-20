@@ -18,9 +18,14 @@ function AuditLogViewer() {
   }, [logs, searchQuery, actionFilter, contractFilter]);
 
   const loadLogs = () => {
-    const stored = localStorage.getItem('adminAuditLogs');
-    if (stored) {
-      setLogs(JSON.parse(stored));
+    try {
+      const stored = localStorage.getItem('adminAuditLogs');
+      if (stored) {
+        setLogs(JSON.parse(stored));
+      }
+    } catch (err) {
+      console.error('Failed to load audit logs:', err);
+      setLogs([]);
     }
   };
 

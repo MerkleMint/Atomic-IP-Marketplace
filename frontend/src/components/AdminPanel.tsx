@@ -7,10 +7,9 @@ import FeeConfiguration from './FeeConfiguration';
 import AuditLogViewer from './AuditLogViewer';
 import SystemHealthMetrics from './SystemHealthMetrics';
 
-const ADMIN_ADDRESSES: string[] = [
-  // Add your admin addresses here
-  // 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-];
+const ADMIN_ADDRESSES: string[] = (
+  (import.meta.env.VITE_ADMIN_ADDRESSES as string) || ''
+).split(',').map((addr: string) => addr.trim()).filter(Boolean);
 
 const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
   super_admin: [
@@ -40,31 +39,46 @@ function AdminPanel() {
   const [activeTab, setActiveTab] = useState<'overview' | 'pause' | 'fees' | 'logs' | 'health'>('overview');
   const [userRole, setUserRole] = useState<AdminRole | null>(null);
   const [isAuthorized, setIsAuthorized] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    if (!wallet?.address) {
-      setIsAuthorized(false);
-      setUserRole(null);
-      return;
-    }
+    const checkAuthorization = async () => {
+      if (!wallet?.address) {
+        setIsAuthorized(false);
+        setUserRole(null);
+        setIsLoading(false);
+        return;
+      }
 
-    // Check if user is an admin
-    const isAdmin = ADMIN_ADDRESSES.includes(wallet.address);
-    
-    if (isAdmin) {
-      setIsAuthorized(true);
-      // For demo, assign super_admin role. In production, fetch from backend
-      setUserRole('super_admin');
-    } else {
-      setIsAuthorized(false);
-      setUserRole(null);
-    }
+      // Check if user is an admin
+      const isAdmin = ADMIN_ADDRESSES.includes(wallet.address);
+      
+      if (isAdmin) {
+        setIsAuthorized(true);
+        // For demo, assign super_admin role. In production, fetch from backend
+        setUserRole('super_admin');
+      } else {
+        setIsAuthorized(false);
+        setUserRole(null);
+      }
+      setIsLoading(false);
+    };
+
+    checkAuthorization();
   }, [wallet?.address]);
 
   const hasPermission = (permission: Permission): boolean => {
     if (!userRole) return false;
-    return ROLE_PERMISSIONS[userRole].includes(permission);
+    return ROLE_PERMISSIONS[userRole as AdminRole].includes(permission);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background text-foreground p-8 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   if (!wallet?.address) {
     return (
@@ -201,14 +215,14 @@ function AdminPanel() {
                 </div>
                 <div className="bg-secondary rounded-lg p-4">
                   <p className="text-sm text-muted-foreground mb-1">Network</p>
-                  <p className="text-2xl font-bold">Testnet</p>
+                  <p className="text-2xl font-bold">{import.meta.env.VITE_STELLAR_NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'}</p>
                 </div>
               </div>
               
               <div className="mt-6">
                 <h3 className="text-lg font-semibold mb-3">Your Permissions</h3>
                 <div className="flex flex-wrap gap-2">
-                  {ROLE_PERMISSIONS[userRole || 'viewer'].map((perm) => (
+                  {ROLE_PERMISSIONS[userRole || 'viewer'].map((perm: Permission) => (
                     <span key={perm} className="px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
                       {perm.replace(/_/g, ' ')}
                     </span>

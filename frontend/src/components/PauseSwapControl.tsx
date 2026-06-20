@@ -4,7 +4,7 @@ import { useWallet } from '../context/WalletContext';
 import { pauseAtomicSwap, unpauseAtomicSwap, isAtomicSwapPaused } from '../lib/contractClient';
 import { TimelockOperation } from '../lib/adminTypes';
 
-const TIMELOCK_DELAY_SECONDS = 3600; // 1 hour timelock
+const TIMELOCK_DELAY_SECONDS = Number(import.meta.env.VITE_TIMELOCK_DELAY_SECONDS) || 3600; // 1 hour timelock default
 
 function PauseSwapControl() {
   const { wallet } = useWallet();
@@ -17,6 +17,7 @@ function PauseSwapControl() {
 
   useEffect(() => {
     loadPauseStatus();
+    loadPersistedTimelock();
   }, []);
 
   useEffect(() => {
@@ -32,7 +33,9 @@ function PauseSwapControl() {
         }
       }, 1000);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [pendingTimelock]);
 
   const loadPauseStatus = async () => {
@@ -41,6 +44,28 @@ function PauseSwapControl() {
       setIsPaused(paused);
     } catch (err) {
       console.error('Failed to load pause status:', err);
+    }
+  };
+
+  const loadPersistedTimelock = () => {
+    try {
+      const stored = localStorage.getItem('pendingTimelock');
+      if (stored) {
+        const timelock = JSON.parse(stored) as TimelockOperation;
+        const now = Math.floor(Date.now() / 1000);
+        
+        // Check if timelock has expired
+        if (timelock.executeAt > now && timelock.status === 'pending') {
+          setPendingTimelock(timelock);
+          setTimelockRemaining(timelock.executeAt - now);
+        } else {
+          // Clear expired timelock
+          localStorage.removeItem('pendingTimelock');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load persisted timelock:', err);
+      localStorage.removeItem('pendingTimelock');
     }
   };
 
@@ -67,6 +92,7 @@ function PauseSwapControl() {
       };
 
       setPendingTimelock(timelockOp);
+      localStorage.setItem('pendingTimelock', JSON.stringify(timelockOp));
       setSuccess('Pause operation initiated. Timelock active.');
     } catch (err: any) {
       setError(err.message || 'Failed to initiate pause');
@@ -86,7 +112,11 @@ function PauseSwapControl() {
       await pauseAtomicSwap(wallet);
       setIsPaused(true);
       setPendingTimelock(null);
+      localStorage.removeItem('pendingTimelock');
       setSuccess('Contract paused successfully');
+      
+      // Refresh contract state
+      await loadPauseStatus();
       
       // Log to audit
       await logAuditAction('pause_contract', 'atomic_swap', { timelockId: pendingTimelock.id });
@@ -120,6 +150,7 @@ function PauseSwapControl() {
       };
 
       setPendingTimelock(timelockOp);
+      localStorage.setItem('pendingTimelock', JSON.stringify(timelockOp));
       setSuccess('Unpause operation initiated. Timelock active.');
     } catch (err: any) {
       setError(err.message || 'Failed to initiate unpause');
@@ -139,7 +170,11 @@ function PauseSwapControl() {
       await unpauseAtomicSwap(wallet);
       setIsPaused(false);
       setPendingTimelock(null);
+      localStorage.removeItem('pendingTimelock');
       setSuccess('Contract unpaused successfully');
+      
+      // Refresh contract state
+      await loadPauseStatus();
       
       // Log to audit
       await logAuditAction('unpause_contract', 'atomic_swap', { timelockId: pendingTimelock.id });
@@ -153,6 +188,7 @@ function PauseSwapControl() {
   const cancelTimelock = () => {
     setPendingTimelock(null);
     setTimelockRemaining(0);
+    localStorage.removeItem('pendingTimelock');
     setSuccess('Timelock operation cancelled');
   };
 
@@ -168,9 +204,13 @@ function PauseSwapControl() {
     };
     
     // Store in localStorage for demo
-    const logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
-    logs.unshift(auditLog);
-    localStorage.setItem('adminAuditLogs', JSON.stringify(logs.slice(0, 100)));
+    try {
+      const logs = JSON.parse(localStorage.getItem('adminAuditLogs') || '[]');
+      logs.unshift(auditLog);
+      localStorage.setItem('adminAuditLogs', JSON.stringify(logs.slice(0, 100)));
+    } catch (err) {
+      console.error('Failed to save audit log:', err);
+    }
   };
 
   const formatTime = (seconds: number) => {
