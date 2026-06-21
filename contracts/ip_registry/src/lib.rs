@@ -33,6 +33,22 @@ pub enum ContractError {
     BatchEmpty = 10,
     BatchTooLarge = 11,
     BatchNotFound = 12,
+    /// Attempt to create a version with a number ≤ the current version.
+    VersionDowngrade = 13,
+}
+
+/// Immutable snapshot of a listing at a given version.
+#[contracttype]
+#[derive(Clone)]
+pub struct Version {
+    pub version_number: u32,
+    pub timestamp: u64,
+    pub changelog: Bytes,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+    pub price_usdc: i128,
+    pub royalty_bps: u32,
+    pub created_by: Address,
 }
 
 /// Maximum number of entries accepted in a single batch operation.
@@ -172,6 +188,10 @@ pub enum DataKey {
     Paused,
     Batch(u64),
     BatchCounter,
+    /// Current version number for a listing (u32).
+    ListingVersion(u64),
+    /// Full ordered history of version snapshots for a listing.
+    VersionHistory(u64),
 }
 
 #[contractevent]
@@ -257,6 +277,18 @@ pub struct ContractPausedEvent {
 pub struct ContractUnpausedEvent {
     #[topic]
     pub admin: Address,
+}
+
+/// Emitted when a new immutable version snapshot is created for a listing.
+#[contractevent]
+pub struct VersionCreated {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub version_number: u32,
+    pub changelog: Bytes,
+    pub ipfs_hash: Bytes,
 }
 
 /// Stateless pre-flight validator for batch operations.
@@ -1758,6 +1790,8 @@ mod test {
                 status: SwapStatus::Pending,
                 decryption_key: None,
                 confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
             };
             env.storage()
                 .persistent()
@@ -1915,6 +1949,8 @@ mod test {
                 status: SwapStatus::Pending,
                 decryption_key: None,
                 confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
             };
             env.storage()
                 .persistent()
@@ -2429,6 +2465,8 @@ mod test {
                 status: SwapStatus::Pending,
                 decryption_key: None,
                 confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
             };
             env.storage()
                 .persistent()

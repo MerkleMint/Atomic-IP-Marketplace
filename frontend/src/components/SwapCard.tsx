@@ -1,6 +1,7 @@
 import { CancelSwapButton } from "./CancelSwapButton";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { DisputePanel } from "./DisputePanel";
+import { MultiSigApprovalPanel } from "./MultiSigApprovalPanel";
 import type { Wallet } from "../lib/walletKit";
 import type { Swap } from "../hooks/useMySwaps";
 import "./SwapCard.css";
@@ -55,6 +56,15 @@ export function SwapCard({
           swap={swap}
           wallet={wallet}
           onSuccess={onSwapUpdated}
+        />
+      )}
+      {/* Multi-sig approval panel: shown for high-value swaps awaiting approval */}
+      {swap.status === "PendingMultiSig" && (
+        <MultiSigApprovalPanel
+          swapId={swap.id}
+          usdcAmount={swap.usdc_amount}
+          wallet={wallet}
+          onApproved={onSwapUpdated}
         />
       )}
       <DisputePanel

@@ -614,7 +614,7 @@ mod test {
         client.transfer_root_ownership(&owner, &1u64, &new_owner);
 
         assert!(
-            !env.events().all().is_empty(),
+            !env.events().all().events().is_empty(),
             "transfer ownership must emit an event"
         );
     }
@@ -835,7 +835,7 @@ mod test {
 
         let path: Vec<ProofNode> = Vec::new(&env);
         assert!(client.verify_partial_proof(&1u64, &leaf, &path));
-        assert!(!env.events().all().is_empty(), "no events emitted");
+        assert!(!env.events().all().events().is_empty(), "no events emitted");
     }
 
     #[test]
@@ -850,7 +850,7 @@ mod test {
         let root: BytesN<32> = env.crypto().sha256(&leaf).into();
         client.set_merkle_root(&owner, &1u64, &root);
 
-        assert!(!env.events().all().is_empty(), "no events emitted");
+        assert!(!env.events().all().events().is_empty(), "no events emitted");
     }
 
     // ── Misc correctness tests ────────────────────────────────────────────────
@@ -937,7 +937,7 @@ mod test {
 
         // Events must include CacheMiss (the proof was computed fresh)
         let events = env.events().all();
-        assert!(!events.is_empty());
+        assert!(!events.events().is_empty());
     }
 
     #[test]

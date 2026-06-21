@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Settings, Activity, FileText, Lock, Unlock, AlertTriangle } from 'lucide-react';
+import { Shield, Settings, Activity, FileText, Lock, Unlock, AlertTriangle, Key } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
 import { AdminRole, Permission } from '../lib/adminTypes';
 import PauseSwapControl from './PauseSwapControl';
 import FeeConfiguration from './FeeConfiguration';
 import AuditLogViewer from './AuditLogViewer';
 import SystemHealthMetrics from './SystemHealthMetrics';
+import { MultiSigConfigPanel } from './MultiSigConfigPanel';
 
 const ADMIN_ADDRESSES: string[] = (
   (import.meta.env.VITE_ADMIN_ADDRESSES as string) || ''
@@ -21,12 +22,14 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     'view_metrics',
     'manage_tokens',
     'transfer_admin',
+    'manage_multisig',
   ],
   operator: [
     'pause_contracts',
     'resolve_disputes',
     'view_logs',
     'view_metrics',
+    'manage_multisig',
   ],
   viewer: [
     'view_logs',
@@ -36,7 +39,7 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
 
 function AdminPanel() {
   const { wallet } = useWallet();
-  const [activeTab, setActiveTab] = useState<'overview' | 'pause' | 'fees' | 'logs' | 'health'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'pause' | 'fees' | 'logs' | 'health' | 'multisig'>('overview');
   const [userRole, setUserRole] = useState<AdminRole | null>(null);
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -193,6 +196,20 @@ function AdminPanel() {
               System Health
             </button>
           )}
+
+          {hasPermission('manage_multisig') && (
+            <button
+              onClick={() => setActiveTab('multisig')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === 'multisig'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-secondary-foreground hover:bg-border'
+              }`}
+            >
+              <Key className="w-4 h-4" />
+              Multi-Sig
+            </button>
+          )}
         </div>
 
         {/* Content */}
@@ -246,6 +263,10 @@ function AdminPanel() {
 
           {activeTab === 'health' && hasPermission('view_metrics') && (
             <SystemHealthMetrics />
+          )}
+
+          {activeTab === 'multisig' && hasPermission('manage_multisig') && (
+            <MultiSigConfigPanel />
           )}
         </div>
       </div>

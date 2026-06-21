@@ -1,0 +1,214 @@
+/* MultiSigApprovalPanel styles */
+
+.multisig-panel {
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 10px;
+  background: var(--color-card, #fff);
+  padding: 1rem 1.25rem;
+  margin-top: 0.75rem;
+}
+
+.multisig-panel--pending {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.multisig-panel--approved {
+  border-color: #10b981;
+  background: #ecfdf5;
+}
+
+/* Header */
+.multisig-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.multisig-panel__title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-foreground, #1e293b);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.multisig-panel__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.multisig-panel__badge--waiting {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+}
+
+.multisig-panel__badge--met {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #10b981;
+}
+
+/* Progress bar */
+.multisig-panel__progress-wrap {
+  margin-bottom: 0.75rem;
+}
+
+.multisig-panel__progress-label {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-bottom: 0.3rem;
+}
+
+.multisig-panel__progress-bar-bg {
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.multisig-panel__progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #f59e0b;
+  transition: width 0.3s ease;
+}
+
+.multisig-panel__progress-bar-fill--met {
+  background: #10b981;
+}
+
+/* Signer list */
+.multisig-panel__signers {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.multisig-panel__signer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.multisig-panel__signer-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+}
+
+.multisig-panel__signer-icon--approved {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.multisig-panel__signer-icon--pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.multisig-panel__signer-addr {
+  font-family: monospace;
+  color: #334155;
+}
+
+.multisig-panel__signer-you {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* Threshold info */
+.multisig-panel__info {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-bottom: 0.75rem;
+}
+
+/* Action */
+.multisig-panel__action {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.multisig-panel__btn {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: opacity 0.15s;
+}
+
+.multisig-panel__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.multisig-panel__btn--primary {
+  background: #f59e0b;
+  color: #fff;
+}
+
+.multisig-panel__btn--primary:not(:disabled):hover {
+  opacity: 0.88;
+}
+
+.multisig-panel__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: multisig-spin 0.6s linear infinite;
+  display: inline-block;
+}
+
+@keyframes multisig-spin {
+  to { transform: rotate(360deg); }
+}
+
+.multisig-panel__error {
+  font-size: 0.78rem;
+  color: #dc2626;
+  padding: 0.4rem 0.6rem;
+  background: #fef2f2;
+  border-radius: 6px;
+  border: 1px solid #fca5a5;
+}
+
+.multisig-panel__success {
+  font-size: 0.78rem;
+  color: #065f46;
+  padding: 0.4rem 0.6rem;
+  background: #ecfdf5;
+  border-radius: 6px;
+  border: 1px solid #6ee7b7;
+}

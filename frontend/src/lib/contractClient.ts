@@ -1186,3 +1186,159 @@ export async function isAtomicSwapPaused(): Promise<boolean> {
   if (!retval) return false;
   return Boolean(StellarSdk.scValToNative(retval));
 }
+
+// ─── Multi-sig approval ───────────────────────────────────────────────────────
+
+import type { MultiSigConfig, MultiSigApproval } from "./multiSigTypes";
+
+/**
+ * Fetch the current multi-sig configuration from the atomic_swap contract.
+ * Returns null if multi-sig has not been configured yet.
+ */
+export async function getMultiSigConfig(): Promise<MultiSigConfig | null> {
+  const retval = await simulateView("get_multisig_config_view", []);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  if (!native || typeof native !== "object") return null;
+
+  const signersArr = Array.isArray(native.signers) ? native.signers : [];
+  return {
+    threshold: String(native.threshold ?? "0"),
+    signers: signersArr.map(String),
+    required_approvals: Number(native.required_approvals ?? 2),
+    enabled: Boolean(native.enabled),
+  };
+}
+
+/**
+ * Fetch the multi-sig approval accumulator for a given swap ID.
+ * Returns null if the swap was not subject to multi-sig.
+ */
+export async function getMultiSigApproval(
+  swapId: number
+): Promise<MultiSigApproval | null> {
+  const retval = await simulateView("get_multisig_approval", [
+    StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+  ]);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  if (!native || typeof native !== "object") return null;
+
+  const approvedBy = Array.isArray(native.approved_by)
+    ? native.approved_by.map(String)
+    : [];
+  return {
+    swap_id: Number(native.swap_id ?? swapId),
+    approved_by: approvedBy,
+    nonce: Number(native.nonce ?? 0),
+  };
+}
+
+/**
+ * Signer: approve a high-value swap that is awaiting multi-sig sign-off.
+ * Requires the caller to be a configured signer on the contract.
+ *
+ * @param swapId - ID of the swap to approve
+ * @param wallet - Connected wallet (must be a configured multi-sig signer)
+ */
+export async function approveMultiSigSwap(
+  swapId: number,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "approve_multisig_swap",
+        StellarSdk.nativeToScVal(swapId, { type: "u64" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Admin: update the multi-sig configuration on the atomic_swap contract.
+ *
+ * @param threshold         - USDC threshold (human-readable, e.g. 10000 for 10,000 USDC)
+ * @param signers           - Array of Stellar addresses authorised to approve
+ * @param requiredApprovals - Minimum approvals needed (2 for 2-of-2 or 2-of-3)
+ * @param enabled           - Toggle; false disables the gate without clearing config
+ * @param wallet            - Admin wallet
+ */
+export async function setMultiSigConfig(
+  threshold: number,
+  signers: string[],
+  requiredApprovals: number,
+  enabled: boolean,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+  if (signers.length === 0) {
+    throw new Error("At least one signer is required.");
+  }
+  if (requiredApprovals < 1 || requiredApprovals > signers.length) {
+    throw new Error(
+      `required_approvals must be between 1 and ${signers.length}.`
+    );
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  // Encode signers as Vec<Address>
+  const signersScVal = StellarSdk.xdr.ScVal.scvVec(
+    signers.map((addr) =>
+      StellarSdk.nativeToScVal(new StellarSdk.Address(addr), {
+        type: "address",
+      })
+    )
+  );
+
+  // threshold is in human-readable USDC — convert to 7-decimal i128
+  const thresholdRaw = BigInt(Math.round(threshold * Math.pow(10, USDC_DECIMALS)));
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "set_multisig_config",
+        StellarSdk.nativeToScVal(thresholdRaw, { type: "i128" }),
+        signersScVal,
+        StellarSdk.nativeToScVal(requiredApprovals, { type: "u32" }),
+        StellarSdk.xdr.ScVal.scvBool(enabled)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}

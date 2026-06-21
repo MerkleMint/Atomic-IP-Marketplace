@@ -14,7 +14,8 @@ export type Permission =
   | 'view_logs'
   | 'view_metrics'
   | 'manage_tokens'
-  | 'transfer_admin';
+  | 'transfer_admin'
+  | 'manage_multisig';
 
 export interface AdminConfig {
   fee_bps: number;
