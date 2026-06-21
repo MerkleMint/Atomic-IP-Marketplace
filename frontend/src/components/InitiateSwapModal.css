@@ -269,3 +269,14 @@
 .ism__swap-id strong {
   color: #6c63ff;
 }
+
+/* Multi-sig notice */
+.ism__multisig-notice {
+  font-size: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  background: #fffbeb;
+  border: 1px solid #f59e0b;
+  border-radius: 7px;
+  color: #92400e;
+  line-height: 1.4;
+}

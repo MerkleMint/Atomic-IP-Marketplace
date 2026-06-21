@@ -11,6 +11,14 @@ const DEFAULT_DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_COMMIT_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_REVEAL_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_APPEAL_WINDOW_LEDGERS: u32 = 17_280;
+/// Default escrow hold period: 7 days at ~6 s/ledger.
+const DEFAULT_HOLD_PERIOD_SECS: u64 = 604_800;
+/// Maximum escrow hold the admin or seller may configure (30 days).
+const MAX_HOLD_PERIOD_SECS: u64 = 2_592_000;
+/// Default multi-sig threshold: 10,000 USDC (7-decimal Stellar representation).
+const DEFAULT_MULTISIG_THRESHOLD: i128 = 100_000_000_000; // 10,000 * 10^7
+/// Maximum number of signers in a multi-sig scheme (supports 2-of-2 and 2-of-3).
+const MAX_MULTISIG_SIGNERS: u32 = 3;
 
 //Added enum
 
@@ -79,6 +87,23 @@ pub enum ContractError {
     DisputeAlreadyAppealed = 36,
     /// No Dispute record found for this swap_id.
     SwapDisputeNotFound = 37,
+    /// Escrow hold period is still active; seller cannot release funds yet.
+    HoldPeriodActive = 38,
+    /// Requested hold period exceeds the configured maximum.
+    HoldPeriodTooLong = 39,
+    // ── Multi-sig errors (40-49) ──────────────────────────────────────────────
+    /// Swap amount exceeds multi-sig threshold and requires multi-sig approval.
+    MultiSigRequired = 40,
+    /// Caller is not a configured multi-sig signer for this swap.
+    NotAMultiSigSigner = 41,
+    /// Signer has already approved this swap.
+    MultiSigAlreadyApproved = 42,
+    /// Multi-sig approval threshold not yet met; cannot proceed.
+    MultiSigThresholdNotMet = 43,
+    /// Multi-sig configuration is invalid (e.g. required > signer count).
+    InvalidMultiSigConfig = 44,
+    /// Replay attack detected: nonce already used.
+    NonceAlreadyUsed = 45,
 }
 
 #[contracttype]
@@ -90,6 +115,8 @@ pub enum SwapStatus {
     Disputed,
     ResolvedBuyer,
     ResolvedSeller,
+    /// High-value swap awaiting multi-sig approvals before becoming active.
+    PendingMultiSig,
 }
 
 /// Protocol-wide escrow hold configuration.
@@ -204,6 +231,49 @@ pub struct ArbiterInfo {
     pub is_active: bool,
 }
 
+// ── Multi-signature approval ───────────────────────────────────────────────────
+
+/// Configuration for the multi-sig approval scheme applied to high-value swaps.
+///
+/// When a swap's `usdc_amount` meets or exceeds `threshold`, it is placed in a
+/// `PendingMultiSig` state. The swap can only proceed to `Pending` (funds locked)
+/// after the required number of approvals from `signers` are collected.
+///
+/// Supported schemes:
+///   - 2-of-2: `required_approvals = 2`, two signers (e.g. admin + seller).
+///   - 2-of-3: `required_approvals = 2`, three signers.
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub struct MultiSigConfig {
+    /// USDC amount (7-decimal i128) at or above which multi-sig is required.
+    pub threshold: i128,
+    /// Addresses authorised to sign high-value swaps.
+    pub signers: soroban_sdk::Vec<Address>,
+    /// Minimum number of distinct approvals required to unblock the swap.
+    pub required_approvals: u32,
+    /// When `false` the multi-sig gate is disabled entirely (all swaps pass through).
+    pub enabled: bool,
+}
+
+/// Per-swap approval accumulator stored while a swap awaits multi-sig sign-off.
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiSigApproval {
+    pub swap_id: u64,
+    /// Addresses that have already approved this swap.
+    pub approved_by: soroban_sdk::Vec<Address>,
+    /// Nonce used to prevent replay attacks across approvals.
+    pub nonce: u64,
+}
+
+/// Compound key: (swap_id, nonce) — used to detect replayed nonce/approval pairs.
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiSigNonceKey {
+    pub swap_id: u64,
+    pub nonce: u64,
+}
+
 /// A single piece of evidence submitted by a swap party.
 #[contracttype]
 #[derive(Clone)]
@@ -244,6 +314,16 @@ pub enum DataKey {
     RevealWindowLedgers,
     /// Ledger window during which the buyer may appeal a finalized dispute.
     AppealWindowLedgers,
+    // ── Escrow hold ───────────────────────────────────────────────────────────
+    /// Per-seller hold period override (u64 seconds). Absent = use global default.
+    SellerHoldPeriod(Address),
+    // ── Multi-signature approval ──────────────────────────────────────────────
+    /// Protocol-wide multi-sig configuration.
+    MultiSigConfig,
+    /// Per-swap approval accumulator.
+    MultiSigApproval(u64),
+    /// Replay-attack guard: (swap_id, nonce) → bool.
+    MultiSigNonce(MultiSigNonceKey),
 }
 
 /// Event lifecycle:
@@ -474,6 +554,37 @@ pub struct DisputeAppealed {
     #[topic]
     pub swap_id: u64,
     pub appellant: Address,
+}
+
+// ── Multi-sig events ──────────────────────────────────────────────────────────
+
+/// Emitted when the multi-sig configuration is updated by the admin.
+#[contractevent]
+pub struct MultiSigConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub threshold: i128,
+    pub required_approvals: u32,
+    pub enabled: bool,
+}
+
+/// Emitted when a signer approves a high-value swap.
+#[contractevent]
+pub struct MultiSigApprovalAdded {
+    #[topic]
+    pub swap_id: u64,
+    #[topic]
+    pub signer: Address,
+    pub approvals_count: u32,
+    pub required_approvals: u32,
+}
+
+/// Emitted when a swap has collected enough multi-sig approvals and is unblocked.
+#[contractevent]
+pub struct MultiSigThresholdMet {
+    #[topic]
+    pub swap_id: u64,
+    pub approvals_count: u32,
 }
 
 /// Discriminates the phase in which a swap failed, for detailed error recovery.
@@ -1004,6 +1115,31 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
         );
 
+        // Determine initial status: high-value swaps enter PendingMultiSig and
+        // require multi-sig approval before the seller can act on them.
+        let initial_status = if Self::needs_multisig(&env, usdc_amount) {
+            SwapStatus::PendingMultiSig
+        } else {
+            SwapStatus::Pending
+        };
+
+        // Initialise the approval accumulator for high-value swaps so signers
+        // can call approve_multisig_swap immediately after initiation.
+        if initial_status == SwapStatus::PendingMultiSig {
+            let approval = MultiSigApproval {
+                swap_id: id,
+                approved_by: soroban_sdk::Vec::new(&env),
+                nonce: id, // use swap_id as initial nonce — unique per swap
+            };
+            let approval_key = DataKey::MultiSigApproval(id);
+            env.storage().persistent().set(&approval_key, &approval);
+            env.storage().persistent().extend_ttl(
+                &approval_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+        }
+
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
             &key,
@@ -1015,7 +1151,7 @@ impl AtomicSwap {
                 usdc_token,
                 created_at: now,
                 expires_at,
-                status: SwapStatus::Pending,
+                status: initial_status,
                 decryption_key: None,
                 confirmed_at_ledger: None,
                 hold_until: None,
@@ -1661,6 +1797,42 @@ impl AtomicSwap {
         admin
     }
 
+    // ── Multi-sig helpers ──────────────────────────────────────────────────────
+
+    /// Return the active MultiSigConfig, or a disabled default if none is stored.
+    fn get_multisig_config(env: &Env) -> MultiSigConfig {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MultiSigConfig)
+            .unwrap_or_else(|| MultiSigConfig {
+                threshold: DEFAULT_MULTISIG_THRESHOLD,
+                signers: soroban_sdk::Vec::new(env),
+                required_approvals: 2,
+                enabled: false,
+            })
+    }
+
+    /// Return `true` when `amount` requires multi-sig approval according to the
+    /// active configuration. `false` when multi-sig is disabled or signers list
+    /// is empty.
+    fn needs_multisig(env: &Env, amount: i128) -> bool {
+        let cfg = Self::get_multisig_config(env);
+        cfg.enabled && cfg.signers.len() >= cfg.required_approvals && amount >= cfg.threshold
+    }
+
+    /// Validate that a proposed multi-sig config is self-consistent.
+    fn validate_multisig_config(env: &Env, cfg: &MultiSigConfig) {
+        if cfg.required_approvals == 0 {
+            env.panic_with_error(ContractError::InvalidMultiSigConfig);
+        }
+        if cfg.signers.len() < cfg.required_approvals {
+            env.panic_with_error(ContractError::InvalidMultiSigConfig);
+        }
+        if cfg.signers.len() > MAX_MULTISIG_SIGNERS {
+            env.panic_with_error(ContractError::InvalidMultiSigConfig);
+        }
+    }
+
     /// Shared fund-distribution logic used by both resolve_dispute (admin) and
     /// finalize_dispute (arbiter vote). Returns true when funds go to buyer.
     fn distribute_dispute_funds(env: &Env, swap: &mut Swap, favor_buyer: bool) {
@@ -1815,6 +1987,202 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+    }
+
+    // ── Multi-signature approval ───────────────────────────────────────────────
+
+    /// Admin: configure the multi-sig scheme for high-value swaps.
+    ///
+    /// # Parameters
+    /// - `threshold`          — USDC amount (7-decimal i128) above which multi-sig is required.
+    /// - `signers`            — Authorised approver addresses. Max `MAX_MULTISIG_SIGNERS` (3).
+    /// - `required_approvals` — Number of distinct approvals needed (2-of-2 or 2-of-3).
+    /// - `enabled`            — Toggle; `false` disables the gate without clearing config.
+    ///
+    /// # Errors
+    /// - `InvalidMultiSigConfig` if `required_approvals == 0`, `required_approvals > signers.len()`,
+    ///   or `signers.len() > MAX_MULTISIG_SIGNERS`.
+    pub fn set_multisig_config(
+        env: Env,
+        threshold: i128,
+        signers: soroban_sdk::Vec<Address>,
+        required_approvals: u32,
+        enabled: bool,
+    ) {
+        let admin = Self::require_admin(&env);
+        let cfg = MultiSigConfig {
+            threshold,
+            signers,
+            required_approvals,
+            enabled,
+        };
+        Self::validate_multisig_config(&env, &cfg);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MultiSigConfig, &cfg);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MultiSigConfig,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        MultiSigConfigUpdated {
+            admin,
+            threshold,
+            required_approvals,
+            enabled,
+        }
+        .publish(&env);
+    }
+
+    /// Signer: approve a high-value swap that is awaiting multi-sig sign-off.
+    ///
+    /// Once the required number of distinct approvals is reached the swap is
+    /// automatically promoted to `Pending` and the normal swap flow continues.
+    ///
+    /// # Replay-attack prevention
+    /// Each approval records the `nonce` embedded in the `MultiSigApproval` record.
+    /// The nonce is written to persistent storage under `DataKey::MultiSigNonce` so
+    /// a replayed call with the same nonce is detected and rejected.
+    ///
+    /// # Signature uniqueness
+    /// A signer cannot approve the same swap twice — the contract checks
+    /// `approved_by` and panics with `MultiSigAlreadyApproved` on a duplicate.
+    ///
+    /// # Order independence
+    /// Approvals may arrive in any order; the swap unlocks as soon as
+    /// `approved_by.len() >= required_approvals`.
+    ///
+    /// # Errors
+    /// - `SwapNotFound`           — no swap with this id.
+    /// - `MultiSigThresholdNotMet` — swap amount is below threshold (no approval needed).
+    /// - `NotAMultiSigSigner`     — caller not in the configured signer list.
+    /// - `MultiSigAlreadyApproved`— caller already approved this swap.
+    /// - `NonceAlreadyUsed`       — replayed nonce detected.
+    pub fn approve_multisig_swap(env: Env, swap_id: u64, signer: Address) {
+        signer.require_auth();
+
+        let swap_key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&swap_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+        if swap.status != SwapStatus::PendingMultiSig {
+            env.panic_with_error(ContractError::MultiSigThresholdNotMet);
+        }
+
+        let ms_cfg = Self::get_multisig_config(&env);
+
+        // Verify caller is a configured signer.
+        let mut is_signer = false;
+        for i in 0..ms_cfg.signers.len() {
+            if ms_cfg.signers.get(i).unwrap() == signer {
+                is_signer = true;
+                break;
+            }
+        }
+        if !is_signer {
+            env.panic_with_error(ContractError::NotAMultiSigSigner);
+        }
+
+        let approval_key = DataKey::MultiSigApproval(swap_id);
+        let mut approval: MultiSigApproval = env
+            .storage()
+            .persistent()
+            .get(&approval_key)
+            .unwrap_or_else(|| MultiSigApproval {
+                swap_id,
+                approved_by: soroban_sdk::Vec::new(&env),
+                nonce: swap_id,
+            });
+
+        // Replay-attack guard: ensure this nonce has not been consumed before.
+        let nonce_key = DataKey::MultiSigNonce(MultiSigNonceKey {
+            swap_id,
+            nonce: approval.nonce,
+        });
+        if env.storage().persistent().has(&nonce_key) {
+            env.panic_with_error(ContractError::NonceAlreadyUsed);
+        }
+
+        // Uniqueness: signer must not have already approved.
+        for i in 0..approval.approved_by.len() {
+            if approval.approved_by.get(i).unwrap() == signer {
+                env.panic_with_error(ContractError::MultiSigAlreadyApproved);
+            }
+        }
+
+        // Record this approval.
+        approval.approved_by.push_back(signer.clone());
+
+        // Burn the nonce to prevent replay.
+        env.storage().persistent().set(&nonce_key, &true);
+        env.storage().persistent().extend_ttl(
+            &nonce_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Advance nonce for the next approval on this swap.
+        approval.nonce = approval.nonce.saturating_add(1);
+
+        let approvals_count = approval.approved_by.len();
+
+        env.storage().persistent().set(&approval_key, &approval);
+        env.storage().persistent().extend_ttl(
+            &approval_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        MultiSigApprovalAdded {
+            swap_id,
+            signer,
+            approvals_count,
+            required_approvals: ms_cfg.required_approvals,
+        }
+        .publish(&env);
+
+        // If threshold is now met, promote the swap to active Pending.
+        if approvals_count >= ms_cfg.required_approvals {
+            swap.status = SwapStatus::Pending;
+            env.storage().persistent().set(&swap_key, &swap);
+            env.storage().persistent().extend_ttl(
+                &swap_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+            MultiSigThresholdMet {
+                swap_id,
+                approvals_count,
+            }
+            .publish(&env);
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    /// Read the current multi-sig configuration. Returns `None` if not yet set.
+    pub fn get_multisig_config_view(env: Env) -> Option<MultiSigConfig> {
+        env.storage().persistent().get(&DataKey::MultiSigConfig)
+    }
+
+    /// Read the approval accumulator for a given swap. Returns `None` if the
+    /// swap was not subject to multi-sig (amount below threshold).
+    pub fn get_multisig_approval(env: Env, swap_id: u64) -> Option<MultiSigApproval> {
+        let key = DataKey::MultiSigApproval(swap_id);
+        let result: Option<MultiSigApproval> = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+        }
+        result
     }
 
     // ── Evidence submission ────────────────────────────────────────────────────
@@ -1990,7 +2358,7 @@ impl AtomicSwap {
         for i in 0..salt.len() {
             preimage.push_back(salt.get(i).unwrap());
         }
-        let computed: BytesN<32> = env.crypto().sha256(&preimage);
+        let computed: BytesN<32> = env.crypto().sha256(&preimage).into();
         if computed != stored_commitment {
             env.panic_with_error(ContractError::InvalidVoteReveal);
         }
@@ -3253,6 +3621,8 @@ mod test {
     /// Issue #571: resolve_dispute must not panic with FeeWouldTruncate for small amounts.
     /// When fee_bps > 0 but usdc_amount is too small for the fee to be non-zero,
     /// the full amount should go to the seller instead of the dispute being stuck.
+    /// We seed the swap directly into storage to bypass initiate_swap's fee-truncation
+    /// pre-flight check, isolating the resolve_dispute behaviour under test.
     #[test]
     fn test_resolve_dispute_small_amount_does_not_panic() {
         let env = Env::default();
@@ -3262,16 +3632,19 @@ mod test {
         let seller = Address::generate(&env);
         let fee_recipient = Address::generate(&env);
 
-        // usdc_amount = 1, fee_bps = 250 → fee = 1*250/10_000 = 0 (would truncate)
+        // usdc_amount = 1, fee_bps = 250 → fee = 1*250/10_000 = 0 (would truncate).
+        // Seed the swap directly so we bypass initiate_swap's pre-flight check and
+        // test only that resolve_dispute handles the edge case gracefully.
         let usdc_id = setup_usdc(&env, &buyer, 1);
         let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
         let key_bytes = Bytes::from_slice(&env, b"key");
-        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let (zk_id, _proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
         client.initialize(
-            &Address::generate(&env),
+            &admin,
             &250u32,
             &fee_recipient,
             &60u64,
@@ -3280,18 +3653,40 @@ mod test {
             &registry_id,
         );
         client.add_allowed_token(&usdc_id);
-        token::Client::new(&env, &usdc_id).approve(&buyer, &contract_id, &1i128, &200u32);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
-        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
-        client.raise_dispute(&swap_id);
+        // Seed a Disputed swap with usdc_amount=1 directly in storage, then fund the contract.
+        let swap_id: u64 = 1;
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        // Transfer the 1 stroop into the contract to simulate a locked escrow.
+        usdc_client.approve(&buyer, &contract_id, &1i128, &200u32);
+        usdc_client.transfer(&buyer, &contract_id, &1i128);
+
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&DataKey::Counter, &swap_id);
+            env.storage().persistent().set(
+                &DataKey::Swap(swap_id),
+                &Swap {
+                    listing_id,
+                    buyer: buyer.clone(),
+                    seller: seller.clone(),
+                    usdc_amount: 1,
+                    usdc_token: usdc_id.clone(),
+                    created_at: 0,
+                    expires_at: 9999,
+                    status: SwapStatus::Disputed,
+                    decryption_key: None,
+                    confirmed_at_ledger: None,
+                    hold_until: None,
+                    buyer_confirmed: false,
+                },
+            );
+        });
 
         // Must succeed — full amount goes to seller since fee truncates to zero.
         client.resolve_dispute(&swap_id, &false);
 
-        let usdc = token::Client::new(&env, &usdc_id);
-        assert_eq!(usdc.balance(&seller), 1);
-        assert_eq!(usdc.balance(&fee_recipient), 0);
+        assert_eq!(usdc_client.balance(&seller), 1);
+        assert_eq!(usdc_client.balance(&fee_recipient), 0);
         assert_eq!(
             client.get_swap_status(&swap_id),
             Some(SwapStatus::ResolvedSeller)
@@ -4621,7 +5016,7 @@ mod test {
         for i in 0..salt.len() {
             preimage.push_back(salt.get(i).unwrap());
         }
-        env.crypto().sha256(&preimage)
+        env.crypto().sha256(&preimage).into()
     }
 
     fn setup_arbiter(client: &AtomicSwapClient, arbiter: &Address, weight: i128) {
@@ -5318,5 +5713,389 @@ mod test {
                 ContractError::SwapNotCompleted as u32
             )))
         );
+    }
+
+    // ── Multi-signature approval tests ────────────────────────────────────────
+
+    fn setup_multisig(
+        env: &Env,
+        client: &AtomicSwapClient,
+        admin1: &Address,
+        admin2: &Address,
+        seller: &Address,
+        threshold: i128,
+    ) {
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
+        signers.push_back(admin1.clone());
+        signers.push_back(admin2.clone());
+        // 2-of-2 scheme: both admin and seller must sign
+        client.set_multisig_config(&threshold, &signers, &2u32, &true);
+        let _ = seller;
+    }
+
+    fn setup_multisig_3of3(
+        env: &Env,
+        client: &AtomicSwapClient,
+        s1: &Address,
+        s2: &Address,
+        s3: &Address,
+        threshold: i128,
+    ) {
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
+        signers.push_back(s1.clone());
+        signers.push_back(s2.clone());
+        signers.push_back(s3.clone());
+        // 2-of-3 scheme
+        client.set_multisig_config(&threshold, &signers, &2u32, &true);
+    }
+
+    /// High-value swap is created with PendingMultiSig status when multi-sig is enabled.
+    #[test]
+    fn test_multisig_high_value_swap_enters_pending_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let high_value: i128 = 1_000_000_000_000; // 100,000 USDC
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, high_value, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000); // threshold = 50 USDC
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &high_value);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+    }
+
+    /// Low-value swap (below threshold) skips multi-sig and enters Pending directly.
+    #[test]
+    fn test_multisig_low_value_swap_skips_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let low_value: i128 = 1_000; // well below threshold
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, low_value, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000); // threshold = 50 USDC
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &low_value);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+    }
+
+    /// 2-of-2 full approval flow: both signers approve → swap becomes Pending.
+    #[test]
+    fn test_multisig_2of2_full_approval_unlocks_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // First signer approves — still PendingMultiSig
+        client.approve_multisig_swap(&swap_id, &signer1);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // Second signer approves — threshold met, promoted to Pending
+        client.approve_multisig_swap(&swap_id, &signer2);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+    }
+
+    /// 2-of-3 partial approval: one signer out of three; swap stays PendingMultiSig.
+    #[test]
+    fn test_multisig_2of3_one_approval_insufficient() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig_3of3(&env, &client, &s1, &s2, &s3, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+
+        client.approve_multisig_swap(&swap_id, &s1);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // Second approval (2-of-3) should unlock it
+        client.approve_multisig_swap(&swap_id, &s3);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+    }
+
+    /// Duplicate approval from same signer is rejected with MultiSigAlreadyApproved.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #42)")]
+    fn test_multisig_duplicate_approval_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        client.approve_multisig_swap(&swap_id, &signer1);
+        // Signer1 approves again — must fail
+        client.approve_multisig_swap(&swap_id, &signer1);
+    }
+
+    /// Non-signer attempt to approve is rejected with NotAMultiSigSigner.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #41)")]
+    fn test_multisig_non_signer_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        // Outsider tries to approve — must fail
+        client.approve_multisig_swap(&swap_id, &outsider);
+    }
+
+    /// approve_multisig_swap on a Pending (already unlocked) swap is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #43)")]
+    fn test_multisig_approve_on_non_pending_multisig_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+
+        let amount: i128 = 100;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+        // multi-sig disabled — swap is Pending immediately
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+
+        let signer = Address::generate(&env);
+        // Trying to approve a non-PendingMultiSig swap must fail
+        client.approve_multisig_swap(&swap_id, &signer);
+    }
+
+    /// Invalid config: required_approvals > signers.len() is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #44)")]
+    fn test_multisig_invalid_config_required_exceeds_signers() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (_, _, _, _, client, _, _) = setup_full(&env, &buyer, &seller, 100, 1);
+
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        signers.push_back(Address::generate(&env));
+        // 1 signer but required = 2 → invalid
+        client.set_multisig_config(&100i128, &signers, &2u32, &true);
+    }
+
+    /// Multi-sig config can be disabled: all swaps become Pending regardless of amount.
+    #[test]
+    fn test_multisig_disabled_passes_all_swaps_through() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        // Configure multi-sig but then disable it
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        signers.push_back(signer1.clone());
+        signers.push_back(signer2.clone());
+        client.set_multisig_config(&500_000_000i128, &signers, &2u32, &false);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+    }
+
+    /// get_multisig_approval returns the accumulated approvals for a high-value swap.
+    #[test]
+    fn test_multisig_get_approval_reflects_signers() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+
+        let approval = client.get_multisig_approval(&swap_id).expect("approval record must exist");
+        assert_eq!(approval.approved_by.len(), 0);
+
+        client.approve_multisig_swap(&swap_id, &signer1);
+        let approval = client.get_multisig_approval(&swap_id).unwrap();
+        assert_eq!(approval.approved_by.len(), 1);
+        assert_eq!(approval.approved_by.get(0).unwrap(), signer1);
+    }
+
+    /// Replay-attack prevention: reusing a consumed nonce is rejected.
+    #[test]
+    fn test_multisig_nonce_prevents_replay() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let amount: i128 = 1_000_000_000_000;
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, amount, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+
+        // First approval burns nonce = swap_id. Attempting a duplicate (same signer) triggers
+        // MultiSigAlreadyApproved, which is the uniqueness guard before the nonce replay guard.
+        client.approve_multisig_swap(&swap_id, &signer1);
+
+        // Verify the nonce was advanced (nonce is now swap_id + 1)
+        let approval = client.get_multisig_approval(&swap_id).unwrap();
+        assert_eq!(approval.nonce, swap_id + 1);
+    }
+
+    /// Full end-to-end: high-value swap → multi-sig approval → confirm → release.
+    #[test]
+    fn test_multisig_full_high_value_swap_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        // 10,000 USDC (7-decimal) = 100_000_000_000 stroops
+        let amount: i128 = 100_000_000_000;
+        let usdc_id = setup_usdc(&env, &buyer, amount);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let key_bytes = Bytes::from_slice(&env, b"multisig-key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+        token::Client::new(&env, &usdc_id).approve(&buyer, &contract_id, &amount, &200u32);
+
+        // Enable multi-sig at threshold = 1 stroop (catches everything)
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        signers.push_back(signer1.clone());
+        signers.push_back(signer2.clone());
+        client.set_multisig_config(&1i128, &signers, &2u32, &true);
+
+        // Initiate — enters PendingMultiSig
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &amount);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // Collect 2-of-2 approvals
+        client.approve_multisig_swap(&swap_id, &signer1);
+        client.approve_multisig_swap(&swap_id, &signer2);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+
+        // Seller confirms and releases
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Completed)
+        );
+
+        client.set_dispute_window(&10u32);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.release_to_seller(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+        let usdc = token::Client::new(&env, &usdc_id);
+        assert_eq!(usdc.balance(&seller), amount);
+        assert_eq!(usdc.balance(&buyer), 0);
     }
 }

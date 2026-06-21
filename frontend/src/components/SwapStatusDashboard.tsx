@@ -29,7 +29,7 @@ export function SwapStatusDashboard() {
   useEffect(() => {
     const mapped = initialSwaps.map((swap) => ({
       ...swap,
-      isPolling: swap.status === "Pending",
+      isPolling: swap.status === "Pending" || swap.status === "PendingMultiSig",
     }));
     setSwaps(mapped);
   }, [initialSwaps]);
@@ -54,7 +54,9 @@ export function SwapStatusDashboard() {
                   s.id === swapId
                     ? {
                         ...updatedSwap,
-                        isPolling: updatedSwap.status === "Pending",
+                        isPolling:
+                          updatedSwap.status === "Pending" ||
+                          updatedSwap.status === "PendingMultiSig",
                         pollError: undefined,
                       }
                     : s
@@ -128,8 +130,8 @@ export function SwapStatusDashboard() {
     );
   }
 
-  const pendingSwaps = swaps.filter((s) => s.status === "Pending");
-  const historySwaps = swaps.filter((s) => s.status !== "Pending");
+  const pendingSwaps = swaps.filter((s) => s.status === "Pending" || s.status === "PendingMultiSig");
+  const historySwaps = swaps.filter((s) => s.status !== "Pending" && s.status !== "PendingMultiSig");
 
   return (
     <section
@@ -262,8 +264,7 @@ export function SwapStatusDashboard() {
                     <SwapStatusBadge
                       status={swap.status as any}
                       confirmations={swap.confirmations}
-                    />
-                  </div>
+                    />                  </div>
 
                   <div className="swap-status-dashboard__card-content">
                     <div className="swap-status-dashboard__field">

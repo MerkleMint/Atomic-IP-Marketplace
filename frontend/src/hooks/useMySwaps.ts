@@ -47,8 +47,7 @@ export function useMySwaps(walletAddress: string | null) {
       const loaded = results
         .filter((r) => r.status === "fulfilled" && (r as PromiseFulfilledResult<Swap>).value !== null)
         .map((r) => (r as PromiseFulfilledResult<Swap>).value);
-      setSwaps(loaded);
-    } catch (err) {
+      setSwaps(loaded);    } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load swaps.");
     } finally {
       setLoading(false);

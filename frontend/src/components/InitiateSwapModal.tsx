@@ -6,7 +6,10 @@ import "./InitiateSwapModal.css";
 const USDC_CONTRACT_ID = import.meta.env.VITE_CONTRACT_USDC ?? "";
 const USDC_DECIMALS = 7; // Stellar USDC uses 7 decimal places
 
-// Removed VITE_CONTRACT_ZK_VERIFIER since it's not used in this component
+// Multi-sig threshold from env, defaulting to 10,000 USDC
+const MULTISIG_THRESHOLD_USDC = Number(
+  import.meta.env.VITE_MULTISIG_THRESHOLD_USDC ?? 10_000
+);
 
 export interface Listing {
   id: number;
@@ -210,6 +213,21 @@ export function InitiateSwapModal({
               <p className="ism__error" role="alert">
                 {error}
               </p>
+            )}
+
+            {/* Multi-sig notice: shown when amount meets or exceeds threshold */}
+            {parseFloat(amount) >= MULTISIG_THRESHOLD_USDC && (
+              <div
+                className="ism__multisig-notice"
+                role="note"
+                aria-label="Multi-sig approval required"
+              >
+                <span aria-hidden="true">🔐</span>{" "}
+                <strong>Multi-sig required</strong> — this swap exceeds the{" "}
+                {MULTISIG_THRESHOLD_USDC.toLocaleString()} USDC threshold and
+                will require approval from authorised signers before it becomes
+                active.
+              </div>
             )}
 
             <div className="ism__steps">
