@@ -643,6 +643,7 @@ impl AtomicSwap {
     /// responsible for panicking with the original error after calling this.
     ///
     /// Returns `true` if the rollback transfer succeeded, `false` otherwise.
+    #[cfg(test)]
     fn attempt_rollback_swap(env: &Env, swap_id: u64) -> bool {
         let key = DataKey::Swap(swap_id);
         if let Some(swap) = env
