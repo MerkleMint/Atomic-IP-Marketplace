@@ -1,11 +1,10 @@
 #![no_std]
 use soroban_sdk::{
-    contractclient, contracterror, contractevent, contracttype, panic_with_error, Address, Bytes,
-    Env, Vec,
+    contractclient, contracterror, contractevent, contracttype, Address, Bytes, Env, Vec,
 };
 
 #[cfg(feature = "contract")]
-use soroban_sdk::{contract, contractimpl};
+use soroban_sdk::{contract, contractimpl, panic_with_error};
 
 /// Entry for batch IP registration.
 #[contracttype]
