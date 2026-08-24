@@ -1133,48 +1133,6 @@ export async function unpauseAtomicSwap(
   await submitAndPoll(tx, wallet, server);
 }
 
-export async function updateAtomicSwapConfig(
-  feeBps: number,
-  feeRecipient: string,
-  cancelDelaySecs: number,
-  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
-): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  
-  // Input validation
-  if (feeBps < 0 || feeBps > 10000) {
-    throw new Error("Fee basis points must be between 0 and 10000 (0-100%)");
-  }
-  if (!feeRecipient || !feeRecipient.trim()) {
-    throw new Error("Fee recipient address is required");
-  }
-  if (!feeRecipient.startsWith('G') || feeRecipient.length !== 56) {
-    throw new Error("Invalid Stellar address format");
-  }
-  if (cancelDelaySecs < 0) {
-    throw new Error("Cancel delay must be non-negative");
-  }
-  
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
-  const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
-  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
-    fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
-  })
-    .addOperation(
-      contract.call(
-        "update_config",
-        StellarSdk.nativeToScVal(feeBps, { type: "u32" }),
-        StellarSdk.nativeToScVal(new StellarSdk.Address(feeRecipient), { type: "address" }),
-        StellarSdk.nativeToScVal(cancelDelaySecs, { type: "u64" })
-      )
-    )
-    .setTimeout(30)
-    .build();
-  await submitAndPoll(tx, wallet, server);
-}
-
 export async function getAtomicSwapConfig(): Promise<any> {
   const retval = await simulateView("get_config", []);
   if (!retval) return null;
@@ -1335,6 +1293,227 @@ export async function setMultiSigConfig(
         signersScVal,
         StellarSdk.nativeToScVal(requiredApprovals, { type: "u32" }),
         StellarSdk.xdr.ScVal.scvBool(enabled)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+// ─── Fee governance ─────────────────────────────────────────────────────────────
+//
+// Fee changes (fee_bps, fee_recipient, cancel_delay_secs) require on-chain
+// quorum from the configured governance signer set — see propose_fee_update /
+// approve_fee_update / execute_fee_update on the atomic_swap contract. There
+// is no client-side proposal store; every function here reads or writes
+// on-chain state directly, so two signers on separate devices/sessions
+// operate on the same source of truth.
+
+import type { GovernanceConfig, FeeProposal } from "./feeGovernanceTypes";
+
+/**
+ * Fetch the current fee-governance signer set / quorum requirement.
+ * Returns null if governance has not been configured yet.
+ */
+export async function getGovernanceConfig(): Promise<GovernanceConfig | null> {
+  const retval = await simulateView("get_governance_config", []);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  if (!native || typeof native !== "object") return null;
+
+  const signersArr = Array.isArray(native.signers) ? native.signers : [];
+  return {
+    signers: signersArr.map(String),
+    required_approvals: Number(native.required_approvals ?? 0),
+  };
+}
+
+/**
+ * Fetch a fee proposal by id. Returns null if no such proposal exists.
+ * Always reads live on-chain state, so a proposal created on one device is
+ * immediately visible from any other.
+ */
+export async function getFeeProposal(proposalId: number): Promise<FeeProposal | null> {
+  const retval = await simulateView("get_fee_proposal", [
+    StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
+  ]);
+  if (!retval || retval.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(retval);
+  if (!native || typeof native !== "object") return null;
+
+  const approvedBy = Array.isArray(native.approved_by)
+    ? native.approved_by.map(String)
+    : [];
+  return {
+    proposal_id: Number(native.proposal_id ?? proposalId),
+    fee_bps: Number(native.fee_bps ?? 0),
+    fee_recipient: String(native.fee_recipient ?? ""),
+    cancel_delay_secs: Number(native.cancel_delay_secs ?? 0),
+    proposer: String(native.proposer ?? ""),
+    approved_by: approvedBy,
+    created_at: Number(native.created_at ?? 0),
+    quorum_reached_at:
+      native.quorum_reached_at === null || native.quorum_reached_at === undefined
+        ? null
+        : Number(native.quorum_reached_at),
+    executed: Boolean(native.executed),
+  };
+}
+
+/**
+ * Governance signer: propose a new fee configuration. Records the proposer's
+ * own approval on-chain via their `require_auth()`. Returns the new
+ * proposal's id.
+ */
+export async function proposeFeeUpdate(
+  feeBps: number,
+  feeRecipient: string,
+  cancelDelaySecs: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<number> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  if (feeBps < 0 || feeBps > 10000) {
+    throw new Error("Fee basis points must be between 0 and 10000 (0-100%)");
+  }
+  if (!feeRecipient.startsWith("G") || feeRecipient.length !== 56) {
+    throw new Error("Invalid Stellar address format");
+  }
+  if (cancelDelaySecs < 0) {
+    throw new Error("Cancel delay must be non-negative");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "propose_fee_update",
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), { type: "address" }),
+        StellarSdk.nativeToScVal(feeBps, { type: "u32" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(feeRecipient), { type: "address" }),
+        StellarSdk.nativeToScVal(cancelDelaySecs, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const txResponse = await submitAndPoll(tx, wallet, server);
+
+  if (!txResponse.returnValue) {
+    throw new Error("Transaction succeeded but returned no value (proposal ID expected).");
+  }
+
+  // Contract returns u64 proposal ID. scValToNative returns BigInt for u64.
+  const proposalId = StellarSdk.scValToNative(txResponse.returnValue);
+  return Number(proposalId);
+}
+
+/**
+ * Governance signer: approve a pending fee proposal via their own
+ * `require_auth()`. Independent of any other signer's session/device.
+ */
+export async function approveFeeUpdate(
+  proposalId: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "approve_fee_update",
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), { type: "address" }),
+        StellarSdk.nativeToScVal(proposalId, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Execute a fee proposal that has reached governance quorum and cleared the
+ * on-chain timelock. Callable by anyone once those conditions are met — it
+ * only applies state governance already authorised on-chain.
+ */
+export async function executeFeeUpdate(
+  proposalId: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "execute_fee_update",
+        StellarSdk.nativeToScVal(proposalId, { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Admin: configure the fee-governance signer set and quorum requirement.
+ */
+export async function setGovernanceConfig(
+  signers: string[],
+  requiredApprovals: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  if (signers.length === 0) {
+    throw new Error("At least one governance signer is required.");
+  }
+  if (requiredApprovals < 1 || requiredApprovals > signers.length) {
+    throw new Error(`required_approvals must be between 1 and ${signers.length}.`);
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const signersScVal = StellarSdk.xdr.ScVal.scvVec(
+    signers.map((addr) =>
+      StellarSdk.nativeToScVal(new StellarSdk.Address(addr), { type: "address" })
+    )
+  );
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "set_governance_config",
+        signersScVal,
+        StellarSdk.nativeToScVal(requiredApprovals, { type: "u32" })
       )
     )
     .setTimeout(30)

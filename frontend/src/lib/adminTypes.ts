@@ -60,14 +60,7 @@ export interface SystemHealthMetrics {
   pendingTimelockOps: number;
 }
 
-export interface FeeUpdateProposal {
-  id: string;
-  proposedBy: string;
-  proposedAt: number;
-  newFeeBps: number;
-  newFeeRecipient: string;
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected' | 'executed';
-  approvals: string[];
-  requiredApprovals: number;
-}
+// NOTE: fee-update governance state now lives entirely on-chain — see
+// FeeProposal / GovernanceConfig in ./feeGovernanceTypes.ts, which mirror the
+// atomic_swap contract's propose_fee_update / approve_fee_update /
+// execute_fee_update flow.

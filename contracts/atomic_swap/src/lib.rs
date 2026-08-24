@@ -19,6 +19,12 @@ const MAX_HOLD_PERIOD_SECS: u64 = 2_592_000;
 const DEFAULT_MULTISIG_THRESHOLD: i128 = 100_000_000_000; // 10,000 * 10^7
 /// Maximum number of signers in a multi-sig scheme (supports 2-of-2 and 2-of-3).
 const MAX_MULTISIG_SIGNERS: u32 = 3;
+/// Maximum number of signers in the fee-governance signer set.
+const MAX_GOVERNANCE_SIGNERS: u32 = 7;
+/// Minimum on-chain delay (seconds) between a fee proposal reaching quorum and
+/// `execute_fee_update` becoming callable. Gives outside parties a window to
+/// observe an approved fee change before it takes effect.
+const FEE_GOVERNANCE_TIMELOCK_SECS: u64 = 86_400; // 24 hours
 
 //Added enum
 
@@ -104,6 +110,21 @@ pub enum ContractError {
     InvalidMultiSigConfig = 44,
     /// Replay attack detected: nonce already used.
     NonceAlreadyUsed = 45,
+    // ── Fee governance errors (46-52) ───────────────────────────────────────────
+    /// Caller is not a configured fee-governance signer.
+    NotAGovernanceSigner = 46,
+    /// No FeeProposal found with this id.
+    FeeProposalNotFound = 47,
+    /// Signer has already approved this fee proposal.
+    FeeProposalAlreadyApproved = 48,
+    /// Fee proposal has already been executed.
+    FeeProposalAlreadyExecuted = 49,
+    /// Fee proposal has not yet collected the required number of approvals.
+    FeeGovernanceQuorumNotMet = 50,
+    /// Quorum was reached but the minimum execution timelock has not elapsed.
+    FeeGovernanceTimelockActive = 51,
+    /// Governance configuration is invalid (e.g. required > signer count).
+    InvalidGovernanceConfig = 52,
 }
 
 #[contracttype]
@@ -274,6 +295,42 @@ pub struct MultiSigNonceKey {
     pub nonce: u64,
 }
 
+// ── Fee governance ──────────────────────────────────────────────────────────
+
+/// Configuration for the on-chain fee-governance signer set.
+///
+/// Fee changes (`fee_bps`, `fee_recipient`, `cancel_delay_secs`) can only be
+/// applied through `propose_fee_update` / `approve_fee_update` /
+/// `execute_fee_update`, which require `required_approvals` distinct
+/// `require_auth()` calls from addresses in `signers` — the admin key alone
+/// can no longer redirect protocol fees.
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub struct GovernanceConfig {
+    /// Addresses authorised to propose and approve fee updates.
+    pub signers: soroban_sdk::Vec<Address>,
+    /// Minimum number of distinct approvals required to reach quorum.
+    pub required_approvals: u32,
+}
+
+/// A proposed fee-configuration change awaiting governance quorum.
+#[contracttype]
+#[derive(Clone)]
+pub struct FeeProposal {
+    pub proposal_id: u64,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+    pub proposer: Address,
+    /// Distinct governance signers that have approved this proposal so far.
+    pub approved_by: soroban_sdk::Vec<Address>,
+    pub created_at: u64,
+    /// Ledger timestamp at which `approved_by.len() >= required_approvals` was
+    /// first reached. `None` while the proposal is still short of quorum.
+    pub quorum_reached_at: Option<u64>,
+    pub executed: bool,
+}
+
 /// A single piece of evidence submitted by a swap party.
 #[contracttype]
 #[derive(Clone)]
@@ -324,6 +381,13 @@ pub enum DataKey {
     MultiSigApproval(u64),
     /// Replay-attack guard: (swap_id, nonce) → bool.
     MultiSigNonce(MultiSigNonceKey),
+    // ── Fee governance ────────────────────────────────────────────────────────
+    /// On-chain fee-governance signer set / quorum requirement.
+    GovernanceConfig,
+    /// Monotonically increasing counter used to mint fresh proposal ids.
+    FeeProposalCounter,
+    /// Fee proposal record keyed by proposal_id.
+    FeeProposal(u64),
 }
 
 /// Event lifecycle:
@@ -442,11 +506,52 @@ pub struct DisputeRaised {
     pub buyer: Address,
 }
 
-/// Emitted when the admin updates the protocol config.
+/// Emitted when the admin updates the fee-governance signer set.
 #[contractevent]
-pub struct ConfigUpdated {
+pub struct GovernanceConfigUpdated {
     #[topic]
     pub admin: Address,
+    pub required_approvals: u32,
+}
+
+/// Emitted when a governance signer proposes a fee-configuration change.
+#[contractevent]
+pub struct FeeProposalCreated {
+    #[topic]
+    pub proposal_id: u64,
+    #[topic]
+    pub proposer: Address,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+}
+
+/// Emitted when a governance signer approves a fee proposal.
+#[contractevent]
+pub struct FeeProposalApproved {
+    #[topic]
+    pub proposal_id: u64,
+    #[topic]
+    pub signer: Address,
+    pub approvals_count: u32,
+    pub required_approvals: u32,
+}
+
+/// Emitted once a fee proposal collects its required approvals; execution is
+/// still gated behind `FEE_GOVERNANCE_TIMELOCK_SECS` after this point.
+#[contractevent]
+pub struct FeeProposalQuorumReached {
+    #[topic]
+    pub proposal_id: u64,
+    pub quorum_reached_at: u64,
+    pub executable_at: u64,
+}
+
+/// Emitted when a fee proposal is executed and the protocol config is updated.
+#[contractevent]
+pub struct FeeUpdateExecuted {
+    #[topic]
+    pub proposal_id: u64,
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub cancel_delay_secs: u64,
@@ -908,43 +1013,309 @@ impl AtomicSwap {
         }
     }
 
-    pub fn update_config(env: Env, fee_bps: u32, fee_recipient: Address, cancel_delay_secs: u64) {
-        let admin: Address = env
-            .storage()
+    // ── Fee governance ────────────────────────────────────────────────────────
+    //
+    // Fee changes (fee_bps, fee_recipient, cancel_delay_secs) are no longer
+    // settable by a single admin call — they require on-chain quorum from the
+    // configured governance signer set, mirroring the approve_multisig_swap
+    // pattern: each approval is its own require_auth(), so signers on separate
+    // machines/sessions can independently approve the same proposal.
+
+    /// Return the active GovernanceConfig, or an empty/disabled default if none
+    /// is stored yet (no signers configured ⇒ no proposal can reach quorum).
+    fn get_governance_config_or_default(env: &Env) -> GovernanceConfig {
+        env.storage()
             .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
-        admin.require_auth();
+            .get(&DataKey::GovernanceConfig)
+            .unwrap_or_else(|| GovernanceConfig {
+                signers: soroban_sdk::Vec::new(env),
+                required_approvals: 1,
+            })
+    }
+
+    fn validate_governance_config(env: &Env, cfg: &GovernanceConfig) {
+        if cfg.required_approvals == 0 {
+            env.panic_with_error(ContractError::InvalidGovernanceConfig);
+        }
+        if cfg.signers.len() < cfg.required_approvals {
+            env.panic_with_error(ContractError::InvalidGovernanceConfig);
+        }
+        if cfg.signers.len() > MAX_GOVERNANCE_SIGNERS {
+            env.panic_with_error(ContractError::InvalidGovernanceConfig);
+        }
+    }
+
+    fn require_governance_signer(env: &Env, cfg: &GovernanceConfig, signer: &Address) {
+        let mut is_signer = false;
+        for i in 0..cfg.signers.len() {
+            if cfg.signers.get(i).unwrap() == *signer {
+                is_signer = true;
+                break;
+            }
+        }
+        if !is_signer {
+            env.panic_with_error(ContractError::NotAGovernanceSigner);
+        }
+    }
+
+    /// Admin: configure the fee-governance signer set and quorum requirement.
+    ///
+    /// # Errors
+    /// - `InvalidGovernanceConfig` if `required_approvals == 0`,
+    ///   `required_approvals > signers.len()`, or `signers.len() > MAX_GOVERNANCE_SIGNERS`.
+    pub fn set_governance_config(
+        env: Env,
+        signers: soroban_sdk::Vec<Address>,
+        required_approvals: u32,
+    ) {
+        let admin = Self::require_admin(&env);
+        let cfg = GovernanceConfig {
+            signers,
+            required_approvals,
+        };
+        Self::validate_governance_config(&env, &cfg);
+        env.storage()
+            .persistent()
+            .set(&DataKey::GovernanceConfig, &cfg);
+        env.storage().persistent().extend_ttl(
+            &DataKey::GovernanceConfig,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        GovernanceConfigUpdated {
+            admin,
+            required_approvals,
+        }
+        .publish(&env);
+    }
+
+    /// Governance signer: propose a new fee configuration. The proposer's own
+    /// approval is recorded immediately (via their `require_auth()`), so a
+    /// 1-of-N governance set can propose-and-execute in a single approval.
+    ///
+    /// # Errors
+    /// - `FeeBpsTooHigh` — `fee_bps > 10_000`.
+    /// - `NotAGovernanceSigner` — `proposer` is not a configured governance signer.
+    pub fn propose_fee_update(
+        env: Env,
+        proposer: Address,
+        fee_bps: u32,
+        fee_recipient: Address,
+        cancel_delay_secs: u64,
+    ) -> u64 {
+        proposer.require_auth();
+
         if fee_bps > 10_000 {
             env.panic_with_error(ContractError::FeeBpsTooHigh);
         }
-        let mut config: Config = env
+
+        let gov_cfg = Self::get_governance_config_or_default(&env);
+        Self::require_governance_signer(&env, &gov_cfg, &proposer);
+
+        let proposal_id: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::Config)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
-        config.fee_bps = fee_bps;
-        config.fee_recipient = fee_recipient.clone();
-        config.cancel_delay_secs = cancel_delay_secs;
-        env.storage().persistent().set(&DataKey::Config, &config);
-        // Extend TTL on every write to prevent expiration
+            .get(&DataKey::FeeProposalCounter)
+            .unwrap_or(0u64);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeProposalCounter, &(proposal_id + 1));
         env.storage().persistent().extend_ttl(
-            &DataKey::Admin,
+            &DataKey::FeeProposalCounter,
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+
+        let now = env.ledger().timestamp();
+        let mut approved_by: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        approved_by.push_back(proposer.clone());
+        let quorum_reached_at = if gov_cfg.required_approvals <= 1 {
+            Some(now)
+        } else {
+            None
+        };
+
+        let proposal = FeeProposal {
+            proposal_id,
+            fee_bps,
+            fee_recipient: fee_recipient.clone(),
+            cancel_delay_secs,
+            proposer: proposer.clone(),
+            approved_by,
+            created_at: now,
+            quorum_reached_at,
+            executed: false,
+        };
+        let proposal_key = DataKey::FeeProposal(proposal_id);
+        env.storage().persistent().set(&proposal_key, &proposal);
         env.storage().persistent().extend_ttl(
-            &DataKey::Config,
+            &proposal_key,
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
-        ConfigUpdated {
-            admin,
+
+        FeeProposalCreated {
+            proposal_id,
+            proposer,
             fee_bps,
             fee_recipient,
             cancel_delay_secs,
         }
         .publish(&env);
+
+        if let Some(reached_at) = quorum_reached_at {
+            FeeProposalQuorumReached {
+                proposal_id,
+                quorum_reached_at: reached_at,
+                executable_at: reached_at + FEE_GOVERNANCE_TIMELOCK_SECS,
+            }
+            .publish(&env);
+        }
+
+        proposal_id
+    }
+
+    /// Governance signer: approve a pending fee proposal via their own
+    /// `require_auth()`. Independent of any other signer's session/device.
+    ///
+    /// # Errors
+    /// - `FeeProposalNotFound`         — no proposal with this id.
+    /// - `FeeProposalAlreadyExecuted`  — proposal was already executed.
+    /// - `NotAGovernanceSigner`        — caller not in the configured signer set.
+    /// - `FeeProposalAlreadyApproved`  — caller already approved this proposal.
+    pub fn approve_fee_update(env: Env, signer: Address, proposal_id: u64) {
+        signer.require_auth();
+
+        let proposal_key = DataKey::FeeProposal(proposal_id);
+        let mut proposal: FeeProposal = env
+            .storage()
+            .persistent()
+            .get(&proposal_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::FeeProposalNotFound));
+
+        if proposal.executed {
+            env.panic_with_error(ContractError::FeeProposalAlreadyExecuted);
+        }
+
+        let gov_cfg = Self::get_governance_config_or_default(&env);
+        Self::require_governance_signer(&env, &gov_cfg, &signer);
+
+        for i in 0..proposal.approved_by.len() {
+            if proposal.approved_by.get(i).unwrap() == signer {
+                env.panic_with_error(ContractError::FeeProposalAlreadyApproved);
+            }
+        }
+        proposal.approved_by.push_back(signer.clone());
+        let approvals_count = proposal.approved_by.len();
+
+        let newly_reached_quorum =
+            proposal.quorum_reached_at.is_none() && approvals_count >= gov_cfg.required_approvals;
+        if newly_reached_quorum {
+            proposal.quorum_reached_at = Some(env.ledger().timestamp());
+        }
+
+        env.storage().persistent().set(&proposal_key, &proposal);
+        env.storage().persistent().extend_ttl(
+            &proposal_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        FeeProposalApproved {
+            proposal_id,
+            signer,
+            approvals_count,
+            required_approvals: gov_cfg.required_approvals,
+        }
+        .publish(&env);
+
+        if newly_reached_quorum {
+            let reached_at = proposal.quorum_reached_at.unwrap();
+            FeeProposalQuorumReached {
+                proposal_id,
+                quorum_reached_at: reached_at,
+                executable_at: reached_at + FEE_GOVERNANCE_TIMELOCK_SECS,
+            }
+            .publish(&env);
+        }
+    }
+
+    /// Apply a fee proposal that has reached governance quorum and cleared the
+    /// minimum timelock. Callable by anyone once conditions are met — it only
+    /// applies state that governance already authorised on-chain.
+    ///
+    /// # Errors
+    /// - `FeeProposalNotFound`        — no proposal with this id.
+    /// - `FeeProposalAlreadyExecuted` — proposal was already executed.
+    /// - `FeeGovernanceQuorumNotMet`  — required approvals not yet collected.
+    /// - `FeeGovernanceTimelockActive`— quorum reached, but the timelock hasn't elapsed.
+    pub fn execute_fee_update(env: Env, proposal_id: u64) {
+        let proposal_key = DataKey::FeeProposal(proposal_id);
+        let mut proposal: FeeProposal = env
+            .storage()
+            .persistent()
+            .get(&proposal_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::FeeProposalNotFound));
+
+        if proposal.executed {
+            env.panic_with_error(ContractError::FeeProposalAlreadyExecuted);
+        }
+
+        let quorum_reached_at = proposal
+            .quorum_reached_at
+            .unwrap_or_else(|| env.panic_with_error(ContractError::FeeGovernanceQuorumNotMet));
+
+        if env.ledger().timestamp() < quorum_reached_at + FEE_GOVERNANCE_TIMELOCK_SECS {
+            env.panic_with_error(ContractError::FeeGovernanceTimelockActive);
+        }
+
+        let mut config: Config = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.fee_bps = proposal.fee_bps;
+        config.fee_recipient = proposal.fee_recipient.clone();
+        config.cancel_delay_secs = proposal.cancel_delay_secs;
+        env.storage().persistent().set(&DataKey::Config, &config);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Config,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        proposal.executed = true;
+        env.storage().persistent().set(&proposal_key, &proposal);
+        env.storage().persistent().extend_ttl(
+            &proposal_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        FeeUpdateExecuted {
+            proposal_id,
+            fee_bps: proposal.fee_bps,
+            fee_recipient: proposal.fee_recipient,
+            cancel_delay_secs: proposal.cancel_delay_secs,
+        }
+        .publish(&env);
+    }
+
+    /// Read the current fee-governance configuration. `None` if not yet set.
+    pub fn get_governance_config(env: Env) -> Option<GovernanceConfig> {
+        env.storage().persistent().get(&DataKey::GovernanceConfig)
+    }
+
+    /// Read a fee proposal by id. `None` if no such proposal exists.
+    pub fn get_fee_proposal(env: Env, proposal_id: u64) -> Option<FeeProposal> {
+        let key = DataKey::FeeProposal(proposal_id);
+        let result: Option<FeeProposal> = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        result
     }
 
     pub fn pause(env: Env) {
@@ -6098,5 +6469,239 @@ mod test {
         let usdc = token::Client::new(&env, &usdc_id);
         assert_eq!(usdc.balance(&seller), amount);
         assert_eq!(usdc.balance(&buyer), 0);
+    }
+
+    // ── Fee governance tests ──────────────────────────────────────────────────
+
+    fn setup_governance(
+        env: &Env,
+        client: &AtomicSwapClient,
+        signers: &[Address],
+        required_approvals: u32,
+    ) {
+        let mut signers_vec: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
+        for s in signers {
+            signers_vec.push_back(s.clone());
+        }
+        client.set_governance_config(&signers_vec, &required_approvals);
+    }
+
+    fn advance_time(env: &Env, secs: u64) {
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(secs));
+    }
+
+    /// A single signer's approval is not enough to execute a 2-of-N proposal,
+    /// even though that signer is a configured governance signer.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #50)")]
+    fn test_fee_governance_execute_reverts_on_single_approval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone(), signer2.clone()], 2);
+
+        let new_recipient = Address::generate(&env);
+        let proposal_id =
+            client.propose_fee_update(&signer1, &500u32, &new_recipient, &7200u64);
+
+        // Only the proposer's own approval is recorded — quorum (2) not met.
+        let proposal = client.get_fee_proposal(&proposal_id).unwrap();
+        assert_eq!(proposal.approved_by.len(), 1);
+        assert!(proposal.quorum_reached_at.is_none());
+
+        // Even though signer1 is a legitimate configured signer, a single
+        // approval cannot execute a 2-of-2 proposal.
+        client.execute_fee_update(&proposal_id);
+    }
+
+    /// A proposal approved by two distinct governance signers — each via their
+    /// own independent client instance/require_auth(), with no client-side
+    /// state shared between them — reaches quorum and executes correctly
+    /// on-chain once the timelock has elapsed.
+    #[test]
+    fn test_fee_governance_two_independent_signers_reach_quorum_and_execute() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, contract_id, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone(), signer2.clone()], 2);
+
+        let new_recipient = Address::generate(&env);
+
+        // "Session A" proposes and implicitly approves as signer1.
+        let session_a = AtomicSwapClient::new(&env, &contract_id);
+        let proposal_id =
+            session_a.propose_fee_update(&signer1, &500u32, &new_recipient, &7200u64);
+
+        // "Session B" is a brand-new client instance — simulating a different
+        // device/browser with no access to session A's local state — and
+        // independently approves as signer2.
+        let session_b = AtomicSwapClient::new(&env, &contract_id);
+        session_b.approve_fee_update(&signer2, &proposal_id);
+
+        let proposal = client.get_fee_proposal(&proposal_id).unwrap();
+        assert_eq!(proposal.approved_by.len(), 2);
+        assert!(proposal.quorum_reached_at.is_some());
+
+        // Execution is still gated by the timelock immediately after quorum.
+        let result = client.try_execute_fee_update(&proposal_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::FeeGovernanceTimelockActive as u32
+            )))
+        );
+
+        advance_time(&env, FEE_GOVERNANCE_TIMELOCK_SECS);
+        client.execute_fee_update(&proposal_id);
+
+        let config = client.get_config().unwrap();
+        assert_eq!(config.fee_bps, 500);
+        assert_eq!(config.fee_recipient, new_recipient);
+        assert_eq!(config.cancel_delay_secs, 7200);
+
+        let executed = client.get_fee_proposal(&proposal_id).unwrap();
+        assert!(executed.executed);
+    }
+
+    /// Non-signers cannot propose a fee update.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #46)")]
+    fn test_fee_governance_propose_rejects_non_signer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let outsider = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone()], 1);
+
+        let new_recipient = Address::generate(&env);
+        client.propose_fee_update(&outsider, &500u32, &new_recipient, &7200u64);
+    }
+
+    /// Non-signers cannot approve a fee update.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #46)")]
+    fn test_fee_governance_approve_rejects_non_signer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let outsider = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone(), signer2.clone()], 2);
+
+        let new_recipient = Address::generate(&env);
+        let proposal_id =
+            client.propose_fee_update(&signer1, &500u32, &new_recipient, &7200u64);
+        client.approve_fee_update(&outsider, &proposal_id);
+    }
+
+    /// A signer cannot approve the same proposal twice.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #48)")]
+    fn test_fee_governance_duplicate_approval_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone(), signer2.clone()], 2);
+
+        let new_recipient = Address::generate(&env);
+        let proposal_id =
+            client.propose_fee_update(&signer1, &500u32, &new_recipient, &7200u64);
+        // signer1 already approved implicitly by proposing.
+        client.approve_fee_update(&signer1, &proposal_id);
+    }
+
+    /// A proposal cannot be executed twice.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #49)")]
+    fn test_fee_governance_execute_twice_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        // 1-of-1: proposer's own approval reaches quorum immediately.
+        setup_governance(&env, &client, &[signer1.clone()], 1);
+
+        let new_recipient = Address::generate(&env);
+        let proposal_id =
+            client.propose_fee_update(&signer1, &500u32, &new_recipient, &7200u64);
+
+        advance_time(&env, FEE_GOVERNANCE_TIMELOCK_SECS);
+        client.execute_fee_update(&proposal_id);
+        client.execute_fee_update(&proposal_id);
+    }
+
+    /// A fee_bps above 10,000 is rejected at proposal time, same as the old
+    /// admin-only update_config validation.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #21)")]
+    fn test_fee_governance_propose_rejects_fee_bps_too_high() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone()], 1);
+
+        let new_recipient = Address::generate(&env);
+        client.propose_fee_update(&signer1, &10_001u32, &new_recipient, &7200u64);
+    }
+
+    /// required_approvals exceeding the signer count is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #52)")]
+    fn test_fee_governance_invalid_config_required_exceeds_signers() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let (_usdc_id, _listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        setup_governance(&env, &client, &[signer1.clone()], 2);
     }
 }
