@@ -1,7 +1,10 @@
 #![no_std]
 use soroban_sdk::{
-    contractclient, contracterror, contractevent, contracttype, Address, Bytes, BytesN, Env, Vec,
+    contracterror, contractevent, contracttype, Address, Bytes, BytesN, Env, Vec,
 };
+
+#[cfg(not(feature = "contract"))]
+use soroban_sdk::contractclient;
 
 #[cfg(feature = "contract")]
 use soroban_sdk::{contract, contractimpl};
