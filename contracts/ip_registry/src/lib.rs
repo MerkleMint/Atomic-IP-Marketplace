@@ -336,6 +336,7 @@ impl BatchValidator {
 #[contract]
 pub struct IpRegistry;
 
+#[cfg(feature = "contract")]
 fn get_config(env: &Env) -> Config {
     env.storage()
         .persistent()
@@ -343,12 +344,14 @@ fn get_config(env: &Env) -> Config {
         .unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
 }
 
+#[cfg(feature = "contract")]
 fn extend_persistent(env: &Env, key: &DataKey, cfg: &Config) {
     env.storage()
         .persistent()
         .extend_ttl(key, cfg.ttl_threshold, cfg.ttl_extend_to);
 }
 
+#[cfg(feature = "contract")]
 fn assert_not_paused(env: &Env) {
     let paused: bool = env
         .storage()
