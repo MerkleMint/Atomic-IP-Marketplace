@@ -24,7 +24,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt update
-        sudo apt install -y libdbus-1-dev pkg-config
+        sudo apt install -y libdbus-1-dev pkg-config libudev-dev
 
     - name: Install Stellar CLI
       run: |
