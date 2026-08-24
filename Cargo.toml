@@ -8,4 +8,4 @@ resolver = "2"
 
 [workspace.dependencies]
 soroban-sdk = { version = "27.0.6" }
-soroban-poseidon = { version = "27.0.1" }
+soroban-poseidon = { version = "27.0.0" }
