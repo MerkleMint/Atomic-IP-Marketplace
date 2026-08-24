@@ -1,7 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { reinitKit, WalletNetwork } from "../lib/walletKit";
+import { getNetworkConfig } from "../lib/contracts";
+import type { Network } from "../lib/contracts";
+import { getCurrentNetwork, setCurrentNetwork, NETWORK_STORAGE_KEY } from "../lib/network";
 
-export type Network = "testnet" | "mainnet";
+export type { Network };
 
 interface NetworkContextValue {
   network: Network;
@@ -13,30 +16,14 @@ interface NetworkContextValue {
   };
 }
 
-const STORAGE_KEY = "selected_network";
-
-const CONTRACTS: Record<Network, NetworkContextValue["contractAddresses"]> = {
-  testnet: {
-    atomicSwap: import.meta.env.VITE_CONTRACT_ATOMIC_SWAP ?? "",
-    ipRegistry: import.meta.env.VITE_CONTRACT_IP_REGISTRY ?? "",
-    zkVerifier: import.meta.env.VITE_CONTRACT_ZK_VERIFIER ?? "",
-  },
-  mainnet: {
-    atomicSwap: import.meta.env.VITE_MAINNET_CONTRACT_ATOMIC_SWAP ?? "",
-    ipRegistry: import.meta.env.VITE_MAINNET_CONTRACT_IP_REGISTRY ?? "",
-    zkVerifier: import.meta.env.VITE_MAINNET_CONTRACT_ZK_VERIFIER ?? "",
-  },
-};
-
 const NetworkContext = createContext<NetworkContextValue | null>(null);
 
 export function NetworkProvider({ children }: { children: React.ReactNode }) {
-  const [network, setNetworkState] = useState<Network>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved === "mainnet" ? "mainnet" : "testnet";
-  });
+  const [network, setNetworkState] = useState<Network>(getCurrentNetwork);
 
-  // Sync wallets-kit network on mount and change
+  // Sync wallet-kit's signing network on mount and change. Both this and the
+  // transaction-building network in contractClient derive from the same
+  // getNetworkConfig(network) source, so they can't disagree.
   useEffect(() => {
     reinitKit(
       network === "mainnet" ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET
@@ -44,13 +31,24 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   }, [network]);
 
   const setNetwork = useCallback((n: Network) => {
-    localStorage.setItem(STORAGE_KEY, n);
+    localStorage.setItem(NETWORK_STORAGE_KEY, n);
+    setCurrentNetwork(n);
     setNetworkState(n);
   }, []);
 
+  const config = getNetworkConfig(network);
+
   return (
     <NetworkContext.Provider
-      value={{ network, setNetwork, contractAddresses: CONTRACTS[network as Network] }}
+      value={{
+        network,
+        setNetwork,
+        contractAddresses: {
+          atomicSwap: config.atomicSwap,
+          ipRegistry: config.ipRegistry,
+          zkVerifier: config.zkVerifier,
+        },
+      }}
     >
       {children}
     </NetworkContext.Provider>
