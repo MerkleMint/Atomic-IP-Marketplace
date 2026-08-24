@@ -26,9 +26,9 @@ jobs:
         sudo apt update
         sudo apt install -y libdbus-1-dev pkg-config libudev-dev
 
-    - name: Install Stellar CLI
+    - name: Install wasm-opt for optimization
       run: |
-        cargo install stellar-cli
+        sudo apt install -y binaryen
 
     - name: Cache cargo dependencies
       uses: actions/cache@v4
