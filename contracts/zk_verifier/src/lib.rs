@@ -104,6 +104,7 @@ pub trait ZkVerifierInterface {
         listing_id: u64,
         root: BytesN<32>,
     ) -> Result<(), ContractError>;
+    fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>>;
     fn verify_partial_proof(env: Env, listing_id: u64, leaf: Bytes, path: Vec<ProofNode>) -> bool;
 }
 
