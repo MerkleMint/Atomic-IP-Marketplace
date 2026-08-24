@@ -38,9 +38,9 @@ deploy_contract() {
   printf '%s' "$deployed_id"
 }
 
-IP_REGISTRY=$(deploy_contract target/wasm32-unknown-unknown/release/ip_registry.wasm)
-ATOMIC_SWAP=$(deploy_contract target/wasm32-unknown-unknown/release/atomic_swap.wasm)
-ZK_VERIFIER=$(deploy_contract target/wasm32-unknown-unknown/release/zk_verifier.wasm)
+IP_REGISTRY=$(deploy_contract target/wasm32v1-none/release/ip_registry.wasm)
+ATOMIC_SWAP=$(deploy_contract target/wasm32v1-none/release/atomic_swap.wasm)
+ZK_VERIFIER=$(deploy_contract target/wasm32v1-none/release/zk_verifier.wasm)
 
 echo "Initializing ip_registry contract..."
 if ! stellar contract invoke \

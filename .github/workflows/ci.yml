@@ -19,7 +19,7 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
-        target: wasm32-unknown-unknown
+        target: wasm32v1-none
 
     - name: Install system dependencies
       run: |
@@ -63,5 +63,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: wasm-contracts
-        path: target/wasm32-unknown-unknown/release/*.wasm
+        path: target/wasm32v1-none/release/*.wasm
         retention-days: 30

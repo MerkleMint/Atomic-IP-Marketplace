@@ -15,10 +15,10 @@ See [contracts/](/contracts/) for sources and [docs/architecture.md](./docs/arch
 
 ### Prerequisites
 
-- **Rust** (stable, with `wasm32-unknown-unknown` target)
+- **Rust** (stable, with `wasm32v1-none` target)
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  rustup target add wasm32-unknown-unknown
+  rustup target add wasm32v1-none
   ```
 - **Stellar CLI** — used to build, optimize, and deploy contracts
   ```bash

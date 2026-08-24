@@ -9,7 +9,7 @@ TARGET="${1:-all}"
 
 # Get the root directory of the project
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WASM_OUTPUT_DIR="${ROOT_DIR}/target/wasm32-unknown-unknown/release"
+WASM_OUTPUT_DIR="${ROOT_DIR}/target/wasm32v1-none/release"
 
 # Function to optimize a WASM contract artifact
 optimize_contract() {
@@ -59,9 +59,9 @@ build_contract() {
     
     echo "Building ${contract}..."
     if [ "$contract" == "ip_registry" ] || [ "$contract" == "zk_verifier" ]; then
-        cargo build --target wasm32-unknown-unknown --release -p "${contract}" --features contract
+        cargo build --target wasm32v1-none --release -p "${contract}" --features contract
     else
-        cargo build --target wasm32-unknown-unknown --release -p "${contract}"
+        cargo build --target wasm32v1-none --release -p "${contract}"
     fi
     echo "${contract} build complete."
     
@@ -92,9 +92,9 @@ fi
 # Build contracts
 if [ "$TARGET" == "all" ]; then
     echo "Building all contracts..."
-    cargo build --target wasm32-unknown-unknown --release -p ip_registry --features contract
-    cargo build --target wasm32-unknown-unknown --release -p zk_verifier --features contract
-    cargo build --target wasm32-unknown-unknown --release -p atomic_swap
+    cargo build --target wasm32v1-none --release -p ip_registry --features contract
+    cargo build --target wasm32v1-none --release -p zk_verifier --features contract
+    cargo build --target wasm32v1-none --release -p atomic_swap
     echo "All contracts built successfully."
     
     # Optimize all WASM artifacts
