@@ -16,11 +16,15 @@ pub enum ContractError {
     InvalidRoot = 5,
 }
 
+#[cfg(feature = "contract")]
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
+#[cfg(feature = "contract")]
 const MAX_PROOF_DEPTH: u32 = 64;
 /// ~3600 seconds at ~6 seconds per ledger
+#[cfg(feature = "contract")]
 const CACHE_TTL_LEDGERS: u32 = 600;
 /// Maximum cached proof results before LRU eviction kicks in
+#[cfg(feature = "contract")]
 const MAX_CACHE_ENTRIES: u32 = 128;
 
 /// A single Merkle proof node: (sibling_hash, is_left)
