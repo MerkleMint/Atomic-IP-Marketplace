@@ -37,7 +37,15 @@ sequenceDiagram
     %% 5. Seller confirms swap (reveals decryption key; USDC stays escrowed)
     Seller->>AtomicSwap: confirm_swap(swap_id, decryption_key, proof_path)
     Note over AtomicSwap: asserts swap.status == Pending
-    AtomicSwap-->>Seller: ok (status → Completed; hold_until snapshotted)
+    AtomicSwap->>IPRegistry: get_listing(listing_id)
+    IPRegistry-->>AtomicSwap: Listing { merkle_root, ... }
+    AtomicSwap->>ZKVerifier: get_merkle_root(listing_id)
+    ZKVerifier-->>AtomicSwap: merkle_root
+    Note over AtomicSwap: reverts (MerkleRootMismatch) unless the two roots match
+    AtomicSwap->>USDC: transfer(contract → fee_recipient, fee)
+    AtomicSwap->>USDC: transfer(contract → seller, amount - fee)
+    USDC-->>AtomicSwap: ok
+    AtomicSwap-->>Seller: ok (status → Completed)
 
     %% 6. Buyer retrieves decryption key
     Buyer->>AtomicSwap: get_decryption_key(swap_id)
@@ -49,6 +57,34 @@ sequenceDiagram
     %% is required.
     Note over Seller,Buyer: See Escrow Hold Period for the release_to_seller step
 ```
+
+### Merkle Root Binding
+
+`ip_registry` and `zk_verifier` each hold their own independently-writable copy
+of a listing's Merkle root (`Listing.merkle_root` and
+`DataKey::MerkleRoot(listing_id)`, respectively). Nothing prevented these from
+drifting apart: a seller could advertise one root via `ip_registry` — the value
+a buyer inspects with `get_listing` before committing funds — while a different
+root is the one actually enforced by `zk_verifier.verify_partial_proof`.
+
+**Source of truth: `ip_registry`.** It's what a buyer reads and reasons about
+pre-swap, so it's the value being trusted. `zk_verifier`'s copy must match it,
+not the other way around.
+
+**Enforcement point: `atomic_swap::confirm_swap`.** The check is enforced at
+confirm time — the single choke point where funds actually move — rather than
+at `register_ip`/`update_listing`/`create_version`. Before verifying the ZK
+proof, `confirm_swap` reads `ip_registry.get_listing(listing_id).merkle_root`
+and `zk_verifier.get_merkle_root(listing_id)` and reverts with
+`MerkleRootMismatch` if they differ (or if `zk_verifier` has no root
+registered), before any proof verification runs.
+
+Enforcing at registration time instead was rejected: it would force
+`ip_registry` to take a hard dependency on `zk_verifier` on every mutation
+path, and would break a seller who legitimately sets the root in `zk_verifier`
+*after* creating the listing. Checking only at the swap choke point avoids a
+redundant dual-write burden on every listing edit — only the swap path needs
+the guard.
 
 ---
 

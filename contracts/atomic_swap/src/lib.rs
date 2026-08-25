@@ -123,6 +123,9 @@ pub enum ContractError {
     /// `settle_dispute` called on a swap that is not awaiting settlement
     /// (not in `PendingAppealWindow` or `Appealed` status).
     SwapNotAwaitingSettlement = 48,
+    /// ip_registry's advertised merkle_root for the listing does not match
+    /// the root registered in zk_verifier (or no root is registered at all).
+    MerkleRootMismatch = 49,
 }
 
 #[contracttype]
@@ -1448,6 +1451,27 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+
+        // ip_registry is the source of truth for the root a buyer sees before
+        // committing funds (docs/architecture.md); reject before spending gas
+        // on proof verification if zk_verifier's root has drifted from it.
+        let listing = IpRegistryClient::new(&env, &config.ip_registry)
+            .get_listing(&swap.listing_id)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        let registered_root =
+            ZkVerifierClient::new(&env, &config.zk_verifier).get_merkle_root(&swap.listing_id);
+        let roots_match = registered_root
+            .map(|root| Bytes::from(root) == listing.merkle_root)
+            .unwrap_or(false);
+        if !roots_match {
+            SwapConfirmFailed {
+                swap_id,
+                error_code: ContractError::MerkleRootMismatch as u32,
+                seller: swap.seller.clone(),
+            }
+            .publish(&env);
+            env.panic_with_error(ContractError::MerkleRootMismatch);
+        }
 
         let verified = ZkVerifierClient::new(&env, &config.zk_verifier).verify_partial_proof(
             &swap.listing_id,
@@ -2855,7 +2879,19 @@ mod test {
         (zk_id, soroban_sdk::Vec::new(env))
     }
 
-    fn setup_registry(env: &Env, seller: &Address, price_usdc: i128) -> (Address, u64) {
+    /// The root zk_verifier will derive for a single-leaf (empty path) proof over `leaf`.
+    /// Used to keep ip_registry's advertised merkle_root in sync with zk_verifier's in tests.
+    fn root_for_leaf(env: &Env, leaf: &Bytes) -> Bytes {
+        let hash: soroban_sdk::BytesN<32> = env.crypto().sha256(leaf).into();
+        Bytes::from(hash)
+    }
+
+    fn setup_registry(
+        env: &Env,
+        seller: &Address,
+        price_usdc: i128,
+        merkle_root: &Bytes,
+    ) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(env, &registry_id);
         let admin = Address::generate(env);
@@ -2863,7 +2899,7 @@ mod test {
         let listing_id = registry.register_ip(
             seller,
             &Bytes::from_slice(env, b"QmHash"),
-            &Bytes::from_slice(env, b"root"),
+            merkle_root,
             &0u32,
             seller,
             &price_usdc,
@@ -2923,7 +2959,14 @@ mod test {
         Address,
     ) {
         let usdc_id = setup_usdc(env, buyer, usdc_amount);
-        let (registry_id, listing_id) = setup_registry(env, seller, price_usdc);
+        // `confirmed_swap` always confirms with the fixed leaf b"key"; keep the
+        // registered root in sync so confirm_swap's merkle-root check passes.
+        let (registry_id, listing_id) = setup_registry(
+            env,
+            seller,
+            price_usdc,
+            &root_for_leaf(env, &Bytes::from_slice(env, b"key")),
+        );
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(env, &contract_id);
         let admin = Address::generate(env);
@@ -3033,10 +3076,11 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &key_bytes));
         let usdc_client = token::Client::new(&env, &usdc_id);
 
-        let key_bytes = Bytes::from_slice(&env, b"secret-key");
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -3120,9 +3164,10 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
-
         let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &key_bytes));
+
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -3221,9 +3266,10 @@ mod test {
 
         let usdc_id = setup_usdc(&env, &buyer, 10_000);
         let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
-
         let key_bytes = Bytes::from_slice(&env, b"key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &root_for_leaf(&env, &key_bytes));
+
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
@@ -3265,9 +3311,10 @@ mod test {
 
         let usdc_id = setup_usdc(&env, &buyer, 1000);
         let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1000);
-
         let key_bytes = Bytes::from_slice(&env, b"key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1000, &root_for_leaf(&env, &key_bytes));
+
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
@@ -3309,7 +3356,8 @@ mod test {
         let fee_recipient = Address::generate(&env);
 
         let usdc_id = setup_usdc(&env, &buyer, 1);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3340,9 +3388,10 @@ mod test {
 
         let usdc_id = setup_usdc(&env, &buyer, 40);
         let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 40);
-
         let key_bytes = Bytes::from_slice(&env, b"key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 40, &root_for_leaf(&env, &key_bytes));
+
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let key_bytes = Bytes::from_slice(&env, b"key");
@@ -3381,7 +3430,8 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3447,7 +3497,8 @@ mod test {
         let real_seller = Address::generate(&env);
         let impersonator = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &real_seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &real_seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3476,7 +3527,8 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3507,7 +3559,8 @@ mod test {
         let seller = Address::generate(&env);
 
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3545,7 +3598,8 @@ mod test {
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
         let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3745,8 +3799,9 @@ mod test {
         env.mock_all_auths();
 
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
         let key_bytes = soroban_sdk::Bytes::from_slice(&env, b"key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &root_for_leaf(&env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -3800,17 +3855,17 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
         registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &500u32,
             &royalty_recipient,
             &1i128,
         );
 
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -3938,7 +3993,8 @@ mod test {
         // Seed the swap directly so we bypass initiate_swap's pre-flight check and
         // test only that resolve_dispute handles the edge case gracefully.
         let usdc_id = setup_usdc(&env, &buyer, 1);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &Bytes::from_slice(&env, b"root"));
         let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id, _proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
@@ -4033,10 +4089,11 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let admin = Address::generate(&env);
         registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &1000u32, // 10% royalty
             &royalty_recipient,
             &1000,
@@ -4056,7 +4113,6 @@ mod test {
             &zk_id,
             &registry_id,
         );
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id_new, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         // Re-initialize with the correct zk verifier that has the merkle root set
         let contract_id2 = env.register(AtomicSwap, ());
@@ -4104,10 +4160,11 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let admin = Address::generate(&env);
         registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &1000u32, // 10% royalty
             &royalty_recipient,
             &1000,
@@ -4127,7 +4184,6 @@ mod test {
             &zk_id,
             &registry_id,
         );
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id_new, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         let contract_id2 = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id2);
@@ -4177,16 +4233,16 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
         registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &500u32, // 5% royalty
             &royalty_recipient,
             &1i128,
         );
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -4304,7 +4360,8 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
         let zk_id = env.register(ZkVerifier, ());
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4497,8 +4554,9 @@ mod test {
         let seller = Address::generate(&env);
         let fee_recipient = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
         let real_key = Bytes::from_slice(&env, b"real-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &real_key));
         let (zk_id, _) = setup_zk_verifier(&env, &seller, listing_id, &real_key);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4531,8 +4589,9 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
         let key_bytes = Bytes::from_slice(&env, b"valid-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4555,6 +4614,93 @@ mod test {
         );
     }
 
+    /// Issue #708: confirm_swap must reject a swap when ip_registry's advertised
+    /// merkle_root for the listing does not match the root actually registered in
+    /// zk_verifier, even when the submitted proof is otherwise well-formed. Without
+    /// this check a seller could advertise one root to buyers (via get_listing) while
+    /// a different root is enforced at proof-verification time.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #46)")]
+    fn test_confirm_swap_rejects_merkle_root_mismatch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let key_bytes = Bytes::from_slice(&env, b"valid-key");
+        // ip_registry advertises a root that does NOT match the one zk_verifier
+        // will independently register for the same listing_id.
+        let (registry_id, listing_id) = setup_registry(
+            &env,
+            &seller,
+            500,
+            &Bytes::from_slice(&env, b"advertised-root-does-not-match"),
+        );
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+        token::Client::new(&env, &usdc_id).approve(&buyer, &contract_id, &500i128, &200u32);
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+    }
+
+    /// Issue #708: when ip_registry's advertised merkle_root matches what
+    /// zk_verifier has registered for the listing, a buyer who inspects
+    /// get_listing(listing_id) before initiating the swap can trust that value —
+    /// confirm_swap succeeds normally instead of being rejected as a mismatch.
+    #[test]
+    fn test_confirm_swap_succeeds_when_roots_match() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let key_bytes = Bytes::from_slice(&env, b"valid-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &key_bytes));
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &3600u64,
+            &zk_id,
+            &registry_id,
+        );
+        client.add_allowed_token(&usdc_id);
+        token::Client::new(&env, &usdc_id).approve(&buyer, &contract_id, &500i128, &200u32);
+
+        // Buyer inspects get_listing before committing funds...
+        let listing = IpRegistryClient::new(&env, &registry_id)
+            .get_listing(&listing_id)
+            .expect("listing should exist");
+        let registered_root = ZkVerifierClient::new(&env, &zk_id)
+            .get_merkle_root(&listing_id)
+            .expect("root should be registered");
+        assert_eq!(listing.merkle_root, Bytes::from(registered_root));
+
+        // ...and confirm_swap enforces exactly that same root.
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Completed)
+        );
+    }
+
     #[test]
     fn test_confirm_swap_emits_swap_completed_event() {
         let env = Env::default();
@@ -4562,8 +4708,9 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
         let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &root_for_leaf(&env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4617,8 +4764,9 @@ mod test {
         // 100 bps on 100 = 1 stroop fee; seller gets 99
         let usdc_id = setup_usdc(&env, &buyer, 100);
         let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 100);
         let key_bytes = Bytes::from_slice(&env, b"k");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 100, &root_for_leaf(&env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4675,7 +4823,8 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id1) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id1) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
         let listing_id2 = IpRegistryClient::new(&env, &registry_id).register_ip(
             &seller,
             &Bytes::from_slice(&env, b"hash2"),
@@ -4714,7 +4863,7 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
         let seller = Address::generate(&env);
-        let (_, listing_id) = setup_registry(&env, &seller, 1);
+        let (_, listing_id) = setup_registry(&env, &seller, 1, &Bytes::from_slice(&env, b"root"));
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         assert!(client.is_listing_available(&listing_id));
@@ -5341,8 +5490,9 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
         let real_key = Bytes::from_slice(&env, b"real-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &root_for_leaf(&env, &real_key));
         let (zk_id, _) = setup_zk_verifier(&env, &seller, listing_id, &real_key);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -5384,7 +5534,8 @@ mod test {
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -6086,7 +6237,8 @@ mod test {
         let seller = Address::generate(&env);
         // Mint tokens but do NOT approve
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 500);
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 500, &Bytes::from_slice(&env, b"root"));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -6137,8 +6289,9 @@ mod test {
         let buyer = Address::generate(env);
         let seller = Address::generate(env);
         let usdc_id = setup_usdc(env, &buyer, 500);
-        let (registry_id, listing_id) = setup_registry(env, &seller, 500);
         let key_bytes = Bytes::from_slice(env, b"secret-key");
+        let (registry_id, listing_id) =
+            setup_registry(env, &seller, 500, &root_for_leaf(env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -6716,8 +6869,9 @@ mod test {
         // 10,000 USDC (7-decimal) = 100_000_000_000 stroops
         let amount: i128 = 100_000_000_000;
         let usdc_id = setup_usdc(&env, &buyer, amount);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
         let key_bytes = Bytes::from_slice(&env, b"multisig-key");
+        let (registry_id, listing_id) =
+            setup_registry(&env, &seller, 1, &root_for_leaf(&env, &key_bytes));
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
