@@ -5,15 +5,13 @@ import {
   FREIGHTER_ID,
   ISupportedWallet,
 } from '@creit.tech/stellar-wallets-kit';
+import { getCurrentNetwork } from './network';
 
 export { FREIGHTER_ID, WalletNetwork };
 export type { ISupportedWallet };
 
 const initialNetwork =
-  (() => {
-    const saved = localStorage.getItem('selected_network');
-    return saved === 'mainnet' ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET;
-  })();
+  getCurrentNetwork() === 'mainnet' ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET;
 
 export let kit = new StellarWalletsKit({
   network: initialNetwork,
