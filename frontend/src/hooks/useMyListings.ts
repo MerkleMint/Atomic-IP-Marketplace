@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getListingsByOwner,
   getListing,
-  getSwapsBySeller,
+  getAllSwapsBySeller,
   getSwap,
 } from "../lib/contractClient";
 import type { Listing } from "../lib/types";
@@ -42,7 +42,7 @@ export function useMyListings(ownerAddress: string | null) {
       // Fetch listing IDs and all seller swap IDs in parallel
       const [listingIds, sellerSwapIds] = await Promise.all([
         getListingsByOwner(ownerAddress),
-        getSwapsBySeller(ownerAddress).catch(() => []),
+        getAllSwapsBySeller(ownerAddress).catch(() => []),
       ]);
 
       if (listingIds.length === 0) {

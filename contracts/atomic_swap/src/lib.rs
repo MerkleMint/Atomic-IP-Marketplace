@@ -22,6 +22,11 @@ const MAX_HOLD_PERIOD_SECS: u64 = 2_592_000;
 const DEFAULT_MULTISIG_THRESHOLD: i128 = 100_000_000_000; // 10,000 * 10^7
 /// Maximum number of signers in a multi-sig scheme (supports 2-of-2 and 2-of-3).
 const MAX_MULTISIG_SIGNERS: u32 = 3;
+/// Maximum number of swap ids stored per BuyerIndexPage/SellerIndexPage entry.
+/// `initiate_swap` only ever reads/writes the current (last) page, so its
+/// per-call storage footprint stays bounded regardless of how many swaps the
+/// address has accumulated in total.
+const INDEX_PAGE_SIZE: u32 = 64;
 
 //Added enum
 
@@ -308,13 +313,29 @@ pub struct DisputeEvidenceItem {
     pub submitted_at_ledger: u32,
 }
 
+/// Metadata for a paged BuyerIndex/SellerIndex: the total number of swap ids
+/// recorded for the address. Page number and in-page offset for any given
+/// logical index are derived from this count (`index / INDEX_PAGE_SIZE`,
+/// `index % INDEX_PAGE_SIZE`), so no explicit page-count bookkeeping is needed.
+#[contracttype]
+#[derive(Clone, Copy)]
+pub struct IndexMeta {
+    pub total: u32,
+}
+
 #[contracttype]
 pub enum DataKey {
     Swap(u64),
     Counter,
     ActiveListingSwap(u64),
-    BuyerIndex(Address),
-    SellerIndex(Address),
+    /// One page (up to INDEX_PAGE_SIZE ids) of a buyer's swap history.
+    BuyerIndexPage(Address, u32),
+    /// Total count of swap ids recorded for a buyer; see `IndexMeta`.
+    BuyerIndexMeta(Address),
+    /// One page (up to INDEX_PAGE_SIZE ids) of a seller's swap history.
+    SellerIndexPage(Address, u32),
+    /// Total count of swap ids recorded for a seller; see `IndexMeta`.
+    SellerIndexMeta(Address),
     Config,
     Admin,
     Paused,
@@ -1046,6 +1067,158 @@ impl AtomicSwap {
         }
     }
 
+    // ── Paged BuyerIndex/SellerIndex helpers ────────────────────────────────
+    //
+    // Swap ids for a given address are stored across fixed-size pages
+    // (`INDEX_PAGE_SIZE` ids each) rather than a single unbounded Vec. Appending
+    // a new id only ever reads/writes the current (last) page plus the meta
+    // counter, so the cost of `initiate_swap` no longer grows with the
+    // address's total swap history. Reading a range of ids touches only the
+    // pages that range spans.
+
+    /// Append `id` to the paged index rooted at `meta_key`, touching only the
+    /// current (last) page.
+    fn index_append(env: &Env, meta_key: &DataKey, page_key: impl Fn(u32) -> DataKey, id: u64) {
+        let mut meta: IndexMeta = env
+            .storage()
+            .persistent()
+            .get(meta_key)
+            .unwrap_or(IndexMeta { total: 0 });
+
+        let page_no = meta.total / INDEX_PAGE_SIZE;
+        let page_key = page_key(page_no);
+        let mut page: soroban_sdk::Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&page_key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+        page.push_back(id);
+        env.storage().persistent().set(&page_key, &page);
+        env.storage().persistent().extend_ttl(
+            &page_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        meta.total += 1;
+        env.storage().persistent().set(meta_key, &meta);
+        env.storage().persistent().extend_ttl(
+            meta_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
+    /// Return up to `limit` swap ids starting at `offset`, reading only the
+    /// pages that range spans. Mirrors the panic/empty-page semantics of the
+    /// pre-existing `get_swaps_by_buyer_page`.
+    fn index_read_page(
+        env: &Env,
+        meta_key: &DataKey,
+        page_key: impl Fn(u32) -> DataKey,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<u64> {
+        if limit == 0 {
+            panic_with_error!(env, ContractError::InvalidPaginationParams);
+        }
+        let meta: Option<IndexMeta> = env.storage().persistent().get(meta_key);
+        let total = meta.map(|m| m.total).unwrap_or(0);
+        // offset == total is a valid cursor-past-end: return empty without panicking.
+        // Only panic when offset is strictly beyond the list.
+        if offset > total {
+            panic_with_error!(env, ContractError::InvalidPaginationParams);
+        }
+        if meta.is_some() {
+            env.storage().persistent().extend_ttl(
+                meta_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+        let mut result = soroban_sdk::Vec::new(env);
+        if offset >= end {
+            return result;
+        }
+
+        let mut page_no = offset / INDEX_PAGE_SIZE;
+        let mut idx_in_page = offset % INDEX_PAGE_SIZE;
+        let mut remaining = end - offset;
+        while remaining > 0 {
+            let key = page_key(page_no);
+            let page: soroban_sdk::Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+
+            let mut i = idx_in_page;
+            while i < page.len() && remaining > 0 {
+                result.push_back(page.get(i).unwrap());
+                i += 1;
+                remaining -= 1;
+            }
+
+            page_no += 1;
+            idx_in_page = 0;
+        }
+        result
+    }
+
+    /// Walk every page and return the full id list, for backward-compatible
+    /// callers of `get_swaps_by_buyer`/`get_swaps_by_seller`. Unlike
+    /// `index_append`, this is unbounded by nature — callers with large
+    /// histories should prefer the paged variant.
+    fn index_read_all(
+        env: &Env,
+        meta_key: &DataKey,
+        page_key: impl Fn(u32) -> DataKey,
+    ) -> soroban_sdk::Vec<u64> {
+        let meta: Option<IndexMeta> = env.storage().persistent().get(meta_key);
+        let total = match meta {
+            Some(m) => m.total,
+            None => return soroban_sdk::Vec::new(env),
+        };
+        env.storage().persistent().extend_ttl(
+            meta_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        if total == 0 {
+            return soroban_sdk::Vec::new(env);
+        }
+
+        let mut result = soroban_sdk::Vec::new(env);
+        let mut page_no = 0u32;
+        let mut seen = 0u32;
+        while seen < total {
+            let key = page_key(page_no);
+            let page: soroban_sdk::Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
+            for i in 0..page.len() {
+                result.push_back(page.get(i).unwrap());
+            }
+            seen += page.len();
+            page_no += 1;
+        }
+        result
+    }
+
     pub fn initiate_swap(
         env: Env,
         listing_id: u64,
@@ -1210,32 +1383,20 @@ impl AtomicSwap {
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
-        let buyer_key = DataKey::BuyerIndex(buyer.clone());
-        let mut buyer_ids: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&buyer_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-        buyer_ids.push_back(id);
-        env.storage().persistent().set(&buyer_key, &buyer_ids);
-        env.storage().persistent().extend_ttl(
-            &buyer_key,
-            PERSISTENT_TTL_LEDGERS,
-            PERSISTENT_TTL_LEDGERS,
+        let buyer_for_page = buyer.clone();
+        Self::index_append(
+            &env,
+            &DataKey::BuyerIndexMeta(buyer.clone()),
+            move |page_no| DataKey::BuyerIndexPage(buyer_for_page.clone(), page_no),
+            id,
         );
 
-        let seller_key = DataKey::SellerIndex(seller.clone());
-        let mut seller_ids: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&seller_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-        seller_ids.push_back(id);
-        env.storage().persistent().set(&seller_key, &seller_ids);
-        env.storage().persistent().extend_ttl(
-            &seller_key,
-            PERSISTENT_TTL_LEDGERS,
-            PERSISTENT_TTL_LEDGERS,
+        let seller_for_page = seller.clone();
+        Self::index_append(
+            &env,
+            &DataKey::SellerIndexMeta(seller.clone()),
+            move |page_no| DataKey::SellerIndexPage(seller_for_page.clone(), page_no),
+            id,
         );
 
         SwapInitiated {
@@ -1731,17 +1892,15 @@ impl AtomicSwap {
         false
     }
 
+    /// Returns the full swap history for `buyer` by walking every page.
+    /// Cost grows with the buyer's total swap count — prefer
+    /// `get_swaps_by_buyer_page` for addresses with large histories.
     pub fn get_swaps_by_buyer(env: Env, buyer: Address) -> soroban_sdk::Vec<u64> {
-        let key = DataKey::BuyerIndex(buyer);
-        let ids: Option<soroban_sdk::Vec<u64>> = env.storage().persistent().get(&key);
-        if ids.is_some() {
-            env.storage().persistent().extend_ttl(
-                &key,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
-        }
-        ids.unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+        Self::index_read_all(
+            &env,
+            &DataKey::BuyerIndexMeta(buyer.clone()),
+            move |page_no| DataKey::BuyerIndexPage(buyer.clone(), page_no),
+        )
     }
 
     /// Paginated variant of `get_swaps_by_buyer`.
@@ -1749,45 +1908,51 @@ impl AtomicSwap {
     /// Returns an empty Vec when `offset == total` (valid cursor-past-end state).
     /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` is strictly
     /// greater than the list length.
+    /// Touches only the page(s) `[offset, offset + limit)` spans, so cost is
+    /// bounded by `limit`, not by the buyer's total swap count.
     pub fn get_swaps_by_buyer_page(
         env: Env,
         buyer: Address,
         offset: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<u64> {
-        if limit == 0 {
-            panic_with_error!(&env, ContractError::InvalidPaginationParams);
-        }
-        let all: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::BuyerIndex(buyer))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-        let total = all.len();
-        // offset == total is a valid cursor-past-end: return empty without panicking.
-        // Only panic when offset is strictly beyond the list.
-        if offset > total {
-            panic_with_error!(&env, ContractError::InvalidPaginationParams);
-        }
-        let end = (offset + limit).min(total);
-        let mut page = soroban_sdk::Vec::new(&env);
-        for i in offset..end {
-            page.push_back(all.get(i).unwrap());
-        }
-        page
+        Self::index_read_page(
+            &env,
+            &DataKey::BuyerIndexMeta(buyer.clone()),
+            move |page_no| DataKey::BuyerIndexPage(buyer.clone(), page_no),
+            offset,
+            limit,
+        )
     }
 
+    /// Returns the full swap history for `seller` by walking every page.
+    /// Cost grows with the seller's total swap count — prefer
+    /// `get_swaps_by_seller_page` for addresses with large histories.
     pub fn get_swaps_by_seller(env: Env, seller: Address) -> soroban_sdk::Vec<u64> {
-        let key = DataKey::SellerIndex(seller);
-        let ids: Option<soroban_sdk::Vec<u64>> = env.storage().persistent().get(&key);
-        if ids.is_some() {
-            env.storage().persistent().extend_ttl(
-                &key,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
-        }
-        ids.unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+        Self::index_read_all(
+            &env,
+            &DataKey::SellerIndexMeta(seller.clone()),
+            move |page_no| DataKey::SellerIndexPage(seller.clone(), page_no),
+        )
+    }
+
+    /// Paginated variant of `get_swaps_by_seller`, matching the semantics and
+    /// signature of `get_swaps_by_buyer_page`.
+    /// Touches only the page(s) `[offset, offset + limit)` spans, so cost is
+    /// bounded by `limit`, not by the seller's total swap count.
+    pub fn get_swaps_by_seller_page(
+        env: Env,
+        seller: Address,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<u64> {
+        Self::index_read_page(
+            &env,
+            &DataKey::SellerIndexMeta(seller.clone()),
+            move |page_no| DataKey::SellerIndexPage(seller.clone(), page_no),
+            offset,
+            limit,
+        )
     }
 
     pub fn is_listing_available(env: Env, listing_id: u64) -> bool {
@@ -4721,6 +4886,203 @@ mod test {
         client.get_swaps_by_buyer_page(&buyer, &2u32, &10u32);
     }
 
+    // ── Issue #712: paged BuyerIndex/SellerIndex ──────────────────────────────
+
+    #[test]
+    fn test_get_swaps_by_seller_page_matches_buyer_pagination_contract() {
+        // get_swaps_by_seller_page must have the exact same offset/limit
+        // semantics as get_swaps_by_buyer_page.
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id1, registry_id, _cid, client, _admin, zk_id) =
+            setup_full(&env, &buyer, &seller, 1500, 1);
+        let listing_id2 = IpRegistryClient::new(&env, &registry_id).register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"h2"),
+            &Bytes::from_slice(&env, b"r2"),
+            &0u32,
+            &seller,
+            &500i128,
+        );
+        let listing_id3 = IpRegistryClient::new(&env, &registry_id).register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"h3"),
+            &Bytes::from_slice(&env, b"r3"),
+            &0u32,
+            &seller,
+            &500i128,
+        );
+        let zk_verifier = Address::generate(&env);
+        let id1 = client.initiate_swap(&listing_id1, &buyer, &seller, &usdc_id, &500);
+        let id2 = client.initiate_swap(&listing_id2, &buyer, &seller, &usdc_id, &500);
+        let id3 = client.initiate_swap(&listing_id3, &buyer, &seller, &usdc_id, &500);
+        // full page
+        let page = client.get_swaps_by_seller_page(&seller, &0u32, &3u32);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page.get(0).unwrap(), id1);
+        assert_eq!(page.get(1).unwrap(), id2);
+        assert_eq!(page.get(2).unwrap(), id3);
+        // first page of 2
+        let page0 = client.get_swaps_by_seller_page(&seller, &0u32, &2u32);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap(), id1);
+        assert_eq!(page0.get(1).unwrap(), id2);
+        // second page (partial)
+        let page1 = client.get_swaps_by_seller_page(&seller, &2u32, &2u32);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap(), id3);
+        // offset == total is a valid cursor-past-end state
+        let past_end = client.get_swaps_by_seller_page(&seller, &3u32, &10u32);
+        assert_eq!(past_end.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_get_swaps_by_seller_page_zero_limit_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        client.get_swaps_by_seller_page(&seller, &0u32, &0u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_get_swaps_by_seller_page_offset_out_of_bounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        // offset=2 on a list of 1 should panic
+        client.get_swaps_by_seller_page(&seller, &2u32, &10u32);
+    }
+
+    #[test]
+    fn test_initiate_swap_storage_footprint_bounded_across_page_rollover() {
+        // Regression test for the bug this issue describes: a naive
+        // "pagination on top of the same unbounded Vec" implementation would
+        // pass the functional pagination tests above but still rewrite the
+        // buyer/seller's *entire* swap history on every initiate_swap call.
+        //
+        // With real paging, initiate_swap only ever touches the current
+        // (last) page + a small meta record, so the write footprint of a call
+        // made after several page rollovers must stay roughly the same as the
+        // very first call — it must not grow with total swap count.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        // Enough swaps to roll over the page boundary twice.
+        let total_swaps: u32 = INDEX_PAGE_SIZE * 2 + 5;
+        let (usdc_id, listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, total_swaps as i128, 1);
+
+        // Same buyer re-initiating on the same still-pending listing is
+        // allowed, so every call lands in the same buyer/seller index.
+        let first_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
+        let write_bytes_first = env.cost_estimate().resources().write_bytes;
+        let write_entries_first = env.cost_estimate().resources().write_entries;
+
+        let mut write_bytes_after_rollover = 0u32;
+        let mut write_entries_after_rollover = 0u32;
+        for n in 2..=total_swaps {
+            client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
+            // Capture the footprint of the call immediately after each page
+            // boundary is crossed (i.e. the first call that must allocate a
+            // fresh page).
+            if n == INDEX_PAGE_SIZE + 1 || n == INDEX_PAGE_SIZE * 2 + 1 {
+                write_bytes_after_rollover = env.cost_estimate().resources().write_bytes;
+                write_entries_after_rollover = env.cost_estimate().resources().write_entries;
+            }
+        }
+
+        assert_eq!(first_id, 1, "sanity check: first swap id should be 1");
+
+        // The number of *entries* written per call is constant regardless of
+        // rollover (page + meta + swap + active-listing, etc.) — this is what
+        // would blow up under the old single-Vec scheme only in byte size,
+        // not entry count, so we assert on bytes: a call right after a page
+        // rollover writes a brand-new (near-empty) page, so its byte
+        // footprint must be close to the very first call's, not proportional
+        // to the ~128 prior ids that would have been re-serialized under the
+        // old unbounded-Vec scheme.
+        assert!(
+            write_entries_after_rollover > 0 && write_bytes_after_rollover > 0,
+            "sanity check: resource metering should be non-zero"
+        );
+        assert_eq!(
+            write_entries_after_rollover, write_entries_first,
+            "the number of entries written per initiate_swap call must stay constant across rollovers"
+        );
+        let growth = write_bytes_after_rollover as i64 - write_bytes_first as i64;
+        assert!(
+            growth.abs() < 200,
+            "initiate_swap's write footprint must stay bounded across page rollovers: \
+             first call wrote {write_bytes_first} bytes, a call after {} prior swaps wrote {write_bytes_after_rollover} bytes",
+            INDEX_PAGE_SIZE * 2,
+        );
+    }
+
+    #[test]
+    fn test_get_swaps_by_seller_page_stable_when_swaps_added_between_reads() {
+        // A previously-fetched page must not change when new swaps push the
+        // index into a new page — pages are append-only and only the current
+        // (last) page is ever mutated, so page N is stable the moment page
+        // N+1 exists.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _registry_id, _cid, client, _admin, _zk_id) =
+            setup_full(&env, &buyer, &seller, (INDEX_PAGE_SIZE + 5) as i128, 1);
+
+        // Fill page 0 exactly.
+        let mut page0_ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        for _ in 0..INDEX_PAGE_SIZE {
+            let id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
+            page0_ids.push_back(id);
+        }
+
+        let page0_before = client.get_swaps_by_seller_page(&seller, &0u32, &INDEX_PAGE_SIZE);
+        assert_eq!(page0_before, page0_ids);
+
+        // Push 5 more swaps — these land on a brand-new page 1.
+        let mut page1_ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        for _ in 0..5 {
+            let id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
+            page1_ids.push_back(id);
+        }
+
+        // Page 0 is unchanged by the new inserts.
+        let page0_after = client.get_swaps_by_seller_page(&seller, &0u32, &INDEX_PAGE_SIZE);
+        assert_eq!(page0_after, page0_before);
+
+        // Page 1 (the offset spanning into the new page) reads correctly.
+        let page1 = client.get_swaps_by_seller_page(&seller, &INDEX_PAGE_SIZE, &10u32);
+        assert_eq!(page1, page1_ids);
+
+        // The unpaginated getter still returns everything, in order.
+        let all = client.get_swaps_by_seller(&seller);
+        assert_eq!(all.len(), INDEX_PAGE_SIZE + 5);
+        for i in 0..INDEX_PAGE_SIZE {
+            assert_eq!(all.get(i).unwrap(), page0_ids.get(i).unwrap());
+        }
+        for i in 0..5 {
+            assert_eq!(
+                all.get(INDEX_PAGE_SIZE + i).unwrap(),
+                page1_ids.get(i).unwrap()
+            );
+        }
+    }
+
     // ── Issue #252 regression test ────────────────────────────────────────────
 
     #[test]
@@ -4808,13 +5170,19 @@ mod test {
             "BuyerIndex should still exist after TTL-near read"
         );
 
-        // Confirm the key is still live in storage after the read.
+        // Confirm the meta and page keys are still live in storage after the read.
         env.as_contract(&contract_id, || {
             assert!(
                 env.storage()
                     .persistent()
-                    .has(&DataKey::BuyerIndex(buyer.clone())),
-                "BuyerIndex TTL should have been extended by get_swaps_by_buyer"
+                    .has(&DataKey::BuyerIndexMeta(buyer.clone())),
+                "BuyerIndexMeta TTL should have been extended by get_swaps_by_buyer"
+            );
+            assert!(
+                env.storage()
+                    .persistent()
+                    .has(&DataKey::BuyerIndexPage(buyer.clone(), 0)),
+                "BuyerIndexPage(0) TTL should have been extended by get_swaps_by_buyer"
             );
         });
     }
@@ -4844,13 +5212,19 @@ mod test {
             "SellerIndex should still exist after TTL-near read"
         );
 
-        // Confirm the key is still live in storage after the read.
+        // Confirm the meta and page keys are still live in storage after the read.
         env.as_contract(&contract_id, || {
             assert!(
                 env.storage()
                     .persistent()
-                    .has(&DataKey::SellerIndex(seller.clone())),
-                "SellerIndex TTL should have been extended by get_swaps_by_seller"
+                    .has(&DataKey::SellerIndexMeta(seller.clone())),
+                "SellerIndexMeta TTL should have been extended by get_swaps_by_seller"
+            );
+            assert!(
+                env.storage()
+                    .persistent()
+                    .has(&DataKey::SellerIndexPage(seller.clone(), 0)),
+                "SellerIndexPage(0) TTL should have been extended by get_swaps_by_seller"
             );
         });
     }
