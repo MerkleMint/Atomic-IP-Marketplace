@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getSwapsByBuyer, getSwapsBySeller, getSwap, getLedgerTimestamp } from "../lib/contractClient";
+import { getAllSwapsByBuyer, getAllSwapsBySeller, getSwap, getLedgerTimestamp } from "../lib/contractClient";
 
 const POLL_INTERVAL_MS = 15_000;
 
@@ -35,8 +35,8 @@ export function useMySwaps(walletAddress: string | null) {
     setError(null);
     try {
       const [buyerIds, sellerIds, ts] = await Promise.all([
-        getSwapsByBuyer(walletAddress),
-        getSwapsBySeller(walletAddress).catch(() => [] as number[]),
+        getAllSwapsByBuyer(walletAddress),
+        getAllSwapsBySeller(walletAddress).catch(() => [] as number[]),
         getLedgerTimestamp(),
       ]);
       setLedgerTimestamp(ts);

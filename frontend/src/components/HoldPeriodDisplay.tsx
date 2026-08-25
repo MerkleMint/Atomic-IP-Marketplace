@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
+import { useCountdown } from "../hooks/useCountdown";
 import "./HoldPeriodDisplay.css";
 
 interface HoldPeriodDisplayProps {
@@ -8,6 +9,8 @@ interface HoldPeriodDisplayProps {
   buyerConfirmed: boolean;
   /** Swap status string from the contract (e.g. "Completed", "ResolvedSeller"). */
   status: string;
+  /** On-chain ledger timestamp (secs), as fetched via getLedgerTimestamp(). */
+  ledgerTimestamp: number;
   /** Optional callback fired once the hold period expires. */
   onExpired?: () => void;
 }
@@ -34,27 +37,27 @@ export function HoldPeriodDisplay({
   holdUntil,
   buyerConfirmed,
   status,
+  ledgerTimestamp,
   onExpired,
 }: HoldPeriodDisplayProps) {
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  // useCountdown ticks the displayed timer locally between polls; elapsed
+  // status is decided against ledgerTimestamp (the on-chain source of truth)
+  // so a skewed local clock can't misreport whether funds are releasable.
+  const { remaining } = useCountdown(holdUntil ?? 0);
+  const isElapsed =
+    holdUntil !== null && (ledgerTimestamp >= holdUntil || remaining === 0);
 
-  const isActive =
-    status === "Completed" &&
-    !buyerConfirmed &&
-    holdUntil !== null &&
-    now < holdUntil;
-
+  const notifiedRef = useRef(false);
   useEffect(() => {
-    if (!isActive) return;
-    const id = setInterval(() => {
-      const t = Math.floor(Date.now() / 1000);
-      setNow(t);
-      if (holdUntil !== null && t >= holdUntil) {
+    if (isElapsed) {
+      if (!notifiedRef.current) {
+        notifiedRef.current = true;
         onExpired?.();
       }
-    }, 1000);
-    return () => clearInterval(id);
-  }, [isActive, holdUntil, onExpired]);
+    } else {
+      notifiedRef.current = false;
+    }
+  }, [isElapsed, onExpired]);
 
   // No hold configured for this swap, or it has already settled.
   if (holdUntil === null || status !== "Completed") return null;
@@ -68,8 +71,7 @@ export function HoldPeriodDisplay({
     );
   }
 
-  const remaining = Math.max(0, holdUntil - now);
-  if (remaining <= 0) {
+  if (isElapsed) {
     return (
       <div className="hold-period hold-period--elapsed" role="status">
         <span className="hold-period__label">Escrow hold</span>

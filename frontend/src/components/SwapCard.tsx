@@ -1,7 +1,9 @@
 import { CancelSwapButton } from "./CancelSwapButton";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { DisputePanel } from "./DisputePanel";
+import { HoldPeriodDisplay } from "./HoldPeriodDisplay";
 import { MultiSigApprovalPanel } from "./MultiSigApprovalPanel";
+import { ReleaseSwapActions } from "./ReleaseSwapActions";
 import type { Wallet } from "../lib/walletKit";
 import type { Swap } from "../hooks/useMySwaps";
 import "./SwapCard.css";
@@ -41,7 +43,14 @@ export function SwapCard({
         holdUntil={swap.hold_until}
         buyerConfirmed={swap.buyer_confirmed}
         status={swap.status}
+        ledgerTimestamp={ledgerTimestamp}
         onExpired={onSwapUpdated}
+      />
+      <ReleaseSwapActions
+        swap={swap}
+        ledgerTimestamp={ledgerTimestamp}
+        wallet={wallet}
+        onSuccess={onSwapUpdated}
       />
       {isBuyer && (
         <CancelSwapButton
