@@ -172,3 +172,60 @@ sequenceDiagram
     AtomicSwap->>USDC: transfer(contract → seller, amount − fees)
     AtomicSwap-->>Seller: ok (status → ResolvedSeller)
 ```
+
+## Dispute Appeal Flow
+
+After arbiters commit/reveal votes on a raised dispute, `finalize_dispute`
+tallies the vote weights and records an outcome — but escrow stays **held**,
+not paid out, until the appeal window closes. This holdback is what makes an
+appeal an actual remedy: since nothing was transferred yet, an appeal can
+change the outcome with a single clean payout instead of clawing back funds
+already sent to the losing party's counterpart.
+
+- **`finalize_dispute`** (anyone, no auth): tallies revealed vote weights,
+  sets `dispute.outcome` and `appeal_deadline_ledger`, and moves
+  `swap.status` to `PendingAppealWindow`. No funds move.
+- **No appeal filed:** once `appeal_deadline_ledger` passes, anyone may call
+  `settle_dispute` to pay out per the recorded arbiter outcome.
+- **Appeal filed:** only the buyer may call `appeal_dispute`, and only before
+  `appeal_deadline_ledger`. This moves `swap.status` to `Appealed` and sets
+  `appeal_resolution_deadline_ledger`. From here:
+  - The **admin** may call `resolve_dispute` at any time to make the single,
+    final payout — reversing the arbiter outcome if warranted.
+  - If the admin never acts, anyone may call `settle_dispute` once
+    `appeal_resolution_deadline_ledger` passes; it pays out per the
+    **original** arbiter outcome, so an inactive admin can never
+    permanently lock the escrow.
+
+```mermaid
+sequenceDiagram
+    actor Buyer
+    actor Admin
+    participant AtomicSwap as atomic_swap
+    participant USDC as USDC Token
+
+    Note over AtomicSwap: arbiters commit/reveal votes (swap.status == Disputed)
+
+    AtomicSwap->>AtomicSwap: finalize_dispute(swap_id)
+    Note over AtomicSwap: outcome recorded; status → PendingAppealWindow (escrow held)
+
+    alt No appeal before appeal_deadline_ledger
+        AtomicSwap->>AtomicSwap: settle_dispute(swap_id)
+        AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
+        AtomicSwap-->>AtomicSwap: ok (status → ResolvedBuyer/ResolvedSeller)
+    else Buyer appeals before appeal_deadline_ledger
+        Buyer->>AtomicSwap: appeal_dispute(swap_id, buyer)
+        Note over AtomicSwap: status → Appealed; appeal_resolution_deadline_ledger set
+
+        alt Admin resolves the appeal
+            Admin->>AtomicSwap: resolve_dispute(swap_id, favor_buyer)
+            AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
+            AtomicSwap-->>Admin: ok (status → ResolvedBuyer/ResolvedSeller)
+        else Admin never acts — resolution timeout elapses
+            AtomicSwap->>AtomicSwap: settle_dispute(swap_id)
+            Note over AtomicSwap: pays per the ORIGINAL arbiter outcome
+            AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
+            AtomicSwap-->>AtomicSwap: ok (status → ResolvedBuyer/ResolvedSeller)
+        end
+    end
+```

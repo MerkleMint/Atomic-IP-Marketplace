@@ -1,23 +1,12 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { USDC_DECIMALS } from "./types";
-import {
-  CONTRACT_ATOMIC_SWAP,
-  CONTRACT_IP_REGISTRY,
-  CONTRACT_ZK_VERIFIER,
-  CONTRACT_USDC,
-  STELLAR_NETWORK,
-  STELLAR_RPC_URL,
-} from "./contracts";
+import { getNetworkConfig } from "./contracts";
+import { getCurrentNetwork } from "./network";
 
-const RPC_URL = STELLAR_RPC_URL;
-
-const ATOMIC_SWAP_CONTRACT_ID = CONTRACT_ATOMIC_SWAP;
-const IP_REGISTRY_CONTRACT_ID = CONTRACT_IP_REGISTRY;
-
-const networkPassphrase = () =>
-  STELLAR_NETWORK === "mainnet"
-    ? StellarSdk.Networks.PUBLIC
-    : StellarSdk.Networks.TESTNET;
+/** Resolve contract IDs, RPC URL, and passphrase for the currently selected network. */
+function currentConfig() {
+  return getNetworkConfig(getCurrentNetwork());
+}
 
 // ─── View helpers ─────────────────────────────────────────────────────────────
 
@@ -29,18 +18,19 @@ async function simulateView(
   functionName: string,
   args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(account, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(contract.call(functionName, ...args))
     .setTimeout(30)
@@ -175,17 +165,18 @@ export async function cancelSwap(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -334,7 +325,8 @@ export async function confirmSwap(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
   if (!decryptionKey || !decryptionKey.trim()) {
@@ -344,9 +336,9 @@ export async function confirmSwap(
     throw new Error("Proof path is required and must be non-empty.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const keyBytes = StellarSdk.xdr.ScVal.scvBytes(
     Buffer.from(decryptionKey.replace(/^0x/, ""), "hex")
@@ -356,7 +348,7 @@ export async function confirmSwap(
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -383,7 +375,8 @@ export async function approveUsdc(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ) {
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const cfg = currentConfig();
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
   const contract = new StellarSdk.Contract(usdcContractId);
   const spenderAddressScVal = StellarSdk.nativeToScVal(
@@ -400,7 +393,7 @@ export async function approveUsdc(
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -427,17 +420,18 @@ export async function initiateSwap(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ): Promise<number> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -477,11 +471,12 @@ async function submitAndPoll(
   },
   server: import("@stellar/stellar-sdk").SorobanRpc.Server
 ): Promise<StellarSdk.SorobanRpc.Api.GetSuccessfulTransactionResponse> {
+  const cfg = currentConfig();
   const preparedTx = await server.prepareTransaction(tx);
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
   const signedTx = StellarSdk.TransactionBuilder.fromXDR(
     signedXdr,
-    networkPassphrase()
+    cfg.passphrase
   );
 
   const sendResult = await server.sendTransaction(signedTx);
@@ -512,18 +507,19 @@ async function simulateIpRegistryView(
   functionName: string,
   args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
-  if (!IP_REGISTRY_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.ipRegistry) {
     throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
-  const contract = new StellarSdk.Contract(IP_REGISTRY_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.ipRegistry);
 
   const tx = new StellarSdk.TransactionBuilder(account, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(contract.call(functionName, ...args))
     .setTimeout(30)
@@ -643,7 +639,8 @@ export async function registerIp(
   priceUsdc: number,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!IP_REGISTRY_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.ipRegistry) {
     throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
   }
   if (!ipfsHash || !ipfsHash.trim()) {
@@ -662,9 +659,9 @@ export async function registerIp(
     throw new Error("Royalty recipient address is required.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(IP_REGISTRY_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.ipRegistry);
 
   // Convert hex strings to Bytes (Buffer)
   const ipfsBytes = Buffer.from(ipfsHash.replace(/^0x/, ""), "hex");
@@ -675,7 +672,7 @@ export async function registerIp(
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -719,7 +716,6 @@ export async function getSwapsBySeller(sellerAddress: string) {
 
 // ─── USDC Balance ─────────────────────────────────────────────────────────────
 
-const USDC_CONTRACT_ID = CONTRACT_USDC;
 export { USDC_DECIMALS } from "./types";
 
 /**
@@ -729,16 +725,17 @@ export { USDC_DECIMALS } from "./types";
  * @returns {Promise<number>} - Balance in human-readable USDC (e.g. 12.5)
  */
 export async function getUsdcBalance(address: string): Promise<number> {
-  if (!USDC_CONTRACT_ID) return 0;
+  const cfg = currentConfig();
+  if (!cfg.usdc) return 0;
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
-  const contract = new StellarSdk.Contract(USDC_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.usdc);
 
   const tx = new StellarSdk.TransactionBuilder(account, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -763,21 +760,21 @@ export async function getUsdcBalance(address: string): Promise<number> {
 
 // ─── ZK Verifier ──────────────────────────────────────────────────────────────
 
-const ZK_VERIFIER_CONTRACT_ID = CONTRACT_ZK_VERIFIER;
 
 async function simulateZkView(
   functionName: string,
   args: import("@stellar/stellar-sdk").xdr.ScVal[]
 ) {
-  if (!ZK_VERIFIER_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.zkVerifier)
     throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
-  const contract = new StellarSdk.Contract(ZK_VERIFIER_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.zkVerifier);
   const tx = new StellarSdk.TransactionBuilder(account, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(contract.call(functionName, ...args))
     .setTimeout(30)
@@ -800,19 +797,20 @@ export async function setMerkleRoot(
   rootHex: string,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ZK_VERIFIER_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.zkVerifier)
     throw new Error("VITE_CONTRACT_ZK_VERIFIER is not configured.");
   const rootBytes = Buffer.from(rootHex.replace(/^0x/, ""), "hex");
   if (rootBytes.length !== 32)
     throw new Error("Root must be exactly 32 bytes (64 hex chars).");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ZK_VERIFIER_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.zkVerifier);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -922,7 +920,8 @@ export async function getArbiters(): Promise<string[]> {
 }
 
 export async function getCurrentLedger(): Promise<number> {
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const cfg = currentConfig();
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const ledger = await server.getLatestLedger();
   return ledger.sequence;
 }
@@ -931,16 +930,17 @@ export async function raiseDispute(
   swapId: number,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -959,18 +959,19 @@ export async function submitEvidence(
   ipfsHash: string,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const hashBytes = Buffer.from(ipfsHash, "utf8");
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1011,18 +1012,19 @@ export async function commitVote(
   salt: string,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
   const commitment = await computeVoteCommitment(favorBuyer, salt);
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1046,18 +1048,19 @@ export async function revealVote(
   salt: string,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
   const saltBytes = Buffer.from(salt, "utf8");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1080,16 +1083,17 @@ export async function finalizeDispute(
   swapId: number,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1107,16 +1111,17 @@ export async function appealDispute(
   swapId: number,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID)
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap)
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1180,13 +1185,14 @@ export async function verifyPartialProof(
 export async function pauseAtomicSwap(
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(contract.call("pause"))
     .setTimeout(30)
@@ -1197,13 +1203,14 @@ export async function pauseAtomicSwap(
 export async function unpauseAtomicSwap(
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(contract.call("unpause"))
     .setTimeout(30)
@@ -1217,7 +1224,8 @@ export async function updateAtomicSwapConfig(
   cancelDelaySecs: number,
   wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   
   // Input validation
   if (feeBps < 0 || feeBps > 10000) {
@@ -1233,12 +1241,12 @@ export async function updateAtomicSwapConfig(
     throw new Error("Cancel delay must be non-negative");
   }
   
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1328,17 +1336,18 @@ export async function approveMultiSigSwap(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(
@@ -1374,7 +1383,8 @@ export async function setMultiSigConfig(
     signTransaction: (xdr: string) => Promise<string>;
   }
 ): Promise<void> {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
+  const cfg = currentConfig();
+  if (!cfg.atomicSwap) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
   if (signers.length === 0) {
@@ -1386,9 +1396,9 @@ export async function setMultiSigConfig(
     );
   }
 
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const server = new StellarSdk.SorobanRpc.Server(cfg.rpcUrl);
   const sourceAccount = await server.getAccount(wallet.address);
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(cfg.atomicSwap);
 
   // Encode signers as Vec<Address>
   const signersScVal = StellarSdk.xdr.ScVal.scvVec(
@@ -1404,7 +1414,7 @@ export async function setMultiSigConfig(
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: cfg.passphrase,
   })
     .addOperation(
       contract.call(

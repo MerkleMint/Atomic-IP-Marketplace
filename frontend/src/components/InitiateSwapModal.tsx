@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { approveUsdc, initiateSwap } from "../lib/contractClient";
+import { useNetwork } from "../context/NetworkContext";
+import { getNetworkConfig } from "../lib/contracts";
 import type { Wallet } from "../lib/walletKit";
 import "./InitiateSwapModal.css";
 
-const USDC_CONTRACT_ID = import.meta.env.VITE_CONTRACT_USDC ?? "";
 const USDC_DECIMALS = 7; // Stellar USDC uses 7 decimal places
 
 // Multi-sig threshold from env, defaulting to 10,000 USDC
@@ -33,6 +34,8 @@ export function InitiateSwapModal({
   onClose,
   onSuccess,
 }: Props) {
+  const { network } = useNetwork();
+  const config = getNetworkConfig(network);
   const [amount, setAmount] = useState(
     listing.price_usdc > 0
       ? String(listing.price_usdc / Math.pow(10, USDC_DECIMALS))
@@ -90,19 +93,14 @@ export function InitiateSwapModal({
     try {
       // Step 1: Approve USDC
       setStep("approving");
-      await approveUsdc(
-        USDC_CONTRACT_ID,
-        import.meta.env.VITE_CONTRACT_ATOMIC_SWAP,
-        raw,
-        wallet
-      );
+      await approveUsdc(config.usdc, config.atomicSwap, raw, wallet);
 
       // Step 2: Initiate swap
       setStep("initiating");
       const id = await initiateSwap(
         listing.id,
         listing.owner,
-        USDC_CONTRACT_ID,
+        config.usdc,
         raw,
         wallet
       );
