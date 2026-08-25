@@ -5,8 +5,8 @@
 Soroban smart contracts for atomic IP swaps using USDC, IP registry, and ZK verification.
 
 ## Overview
-- **`atomic_swap`**: Atomic swaps with USDC payments, pause functionality, paged buyer/seller indexing (`get_swaps_by_buyer_page`/`get_swaps_by_seller_page`) so per-address storage cost stays bounded regardless of trade history size. Double-initialization is guarded with `assert!` — a second `initialize` call panics with `Error(Contract, #6)`.
-- **`ip_registry`**: Register and query IP assets with TTL.
+- **`atomic_swap`**: Atomic swaps with USDC payments, pause functionality, buyer/seller indexing. Double-initialization is guarded with `assert!` — a second `initialize` call panics with `Error(Contract, #6)`.
+- **`ip_registry`**: Register and query IP assets with TTL. Version history is stored per-version and retrieved through paginated reads — see [docs/architecture.md](./docs/architecture.md#ip-registry-version-history).
 - **`zk_verifier`**: Merkle tree ZK proof verification with TTL.
 
 See [contracts/](/contracts/) for sources and [docs/architecture.md](./docs/architecture.md) for sequence diagrams.

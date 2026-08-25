@@ -61,6 +61,11 @@ pub struct Version {
 /// calls; the persisted [`BatchRecord`] history makes such resumption easy.
 pub const MAX_BATCH_SIZE: u32 = 100;
 
+/// Maximum number of entries returned by a single version-history page.
+/// Bounds `get_version_history_page`'s (and `get_version_history`'s) read
+/// footprint regardless of how many versions a listing has accumulated.
+pub const MAX_VERSION_HISTORY_PAGE: u32 = 50;
+
 /// Minimal interface to check for a pending swap on a listing (for cross-contract calls).
 #[contractclient(name = "AtomicSwapClient")]
 pub trait AtomicSwapInterface {
@@ -95,6 +100,8 @@ pub trait IpRegistryInterface {
     fn get_version(env: Env, listing_id: u64, version_number: u32) -> Option<Version>;
     fn get_current_version(env: Env, listing_id: u64) -> u32;
     fn get_version_history(env: Env, listing_id: u64) -> Vec<Version>;
+    fn get_version_history_page(env: Env, listing_id: u64, offset: u32, limit: u32)
+        -> Vec<Version>;
 }
 
 #[contracttype]
@@ -189,8 +196,10 @@ pub enum DataKey {
     BatchCounter,
     /// Current version number for a listing (u32).
     ListingVersion(u64),
-    /// Full ordered history of version snapshots for a listing.
-    VersionHistory(u64),
+    /// Individual version snapshot, keyed by (listing_id, version_number).
+    /// Each `create_version` call writes exactly one such entry, so cost
+    /// stays O(1) regardless of how long a listing's history grows.
+    VersionHistory(u64, u32),
 }
 
 #[contractevent]
@@ -1061,33 +1070,32 @@ impl IpRegistry {
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
 
-        // Load history, append the new immutable snapshot, write back.
-        let history_key = DataKey::VersionHistory(listing_id);
-        let mut history: Vec<Version> = env
-            .storage()
-            .persistent()
-            .get(&history_key)
-            .unwrap_or_else(|| Vec::new(&env));
+        // Write the new immutable snapshot to its own per-version entry —
+        // O(1) write regardless of how many versions already exist.
+        let version_key = DataKey::VersionHistory(listing_id, new_version);
 
         // Immutability check: the slot for new_version must not already exist.
-        // Since we only ever append and version numbers are sequential, a mismatch
-        // here indicates a corrupt state rather than a downgrade attempt.
-        if history.len() >= new_version {
+        // Since we only ever write a fresh key per sequential version number,
+        // a collision here indicates a corrupt state rather than a downgrade
+        // attempt.
+        if env.storage().persistent().has(&version_key) {
             return Err(ContractError::VersionDowngrade);
         }
 
-        history.push_back(Version {
-            version_number: new_version,
-            timestamp: env.ledger().timestamp(),
-            changelog: changelog.clone(),
-            ipfs_hash: new_ipfs_hash.clone(),
-            merkle_root: new_merkle_root.clone(),
-            price_usdc: new_price_usdc,
-            royalty_bps: new_royalty_bps,
-            created_by: owner.clone(),
-        });
-        env.storage().persistent().set(&history_key, &history);
-        extend_persistent(&env, &history_key, &cfg);
+        env.storage().persistent().set(
+            &version_key,
+            &Version {
+                version_number: new_version,
+                timestamp: env.ledger().timestamp(),
+                changelog: changelog.clone(),
+                ipfs_hash: new_ipfs_hash.clone(),
+                merkle_root: new_merkle_root.clone(),
+                price_usdc: new_price_usdc,
+                royalty_bps: new_royalty_bps,
+                created_by: owner.clone(),
+            },
+        );
+        extend_persistent(&env, &version_key, &cfg);
 
         // Advance the version counter.
         env.storage()
@@ -1121,12 +1129,51 @@ impl IpRegistry {
         Ok(new_version)
     }
 
-    /// Return the full immutable version history for a listing (oldest first).
+    /// Return the first page (up to [`MAX_VERSION_HISTORY_PAGE`] entries) of a
+    /// listing's immutable version history, oldest first. For listings with
+    /// more versions than the cap, use [`Self::get_version_history_page`] to
+    /// page through the full history.
     pub fn get_version_history(env: Env, listing_id: u64) -> Vec<Version> {
-        env.storage()
+        Self::get_version_history_page(env, listing_id, 0, MAX_VERSION_HISTORY_PAGE)
+    }
+
+    /// Return a bounded page of a listing's immutable version history, oldest
+    /// first. `offset` is a 0-based index into the sequence of version
+    /// numbers (1..=current_version); `limit` is capped at
+    /// [`MAX_VERSION_HISTORY_PAGE`] regardless of the value passed in, so a
+    /// caller can never force an unbounded read.
+    pub fn get_version_history_page(
+        env: Env,
+        listing_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<Version> {
+        let current_version: u32 = env
+            .storage()
             .persistent()
-            .get(&DataKey::VersionHistory(listing_id))
-            .unwrap_or_else(|| Vec::new(&env))
+            .get(&DataKey::ListingVersion(listing_id))
+            .unwrap_or(0);
+
+        let mut page: Vec<Version> = Vec::new(&env);
+        if offset >= current_version {
+            return page;
+        }
+
+        let capped_limit = core::cmp::min(limit, MAX_VERSION_HISTORY_PAGE);
+        let end = core::cmp::min(offset.saturating_add(capped_limit), current_version);
+
+        let mut version_number = offset + 1;
+        while version_number <= end {
+            if let Some(v) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VersionHistory(listing_id, version_number))
+            {
+                page.push_back(v);
+            }
+            version_number += 1;
+        }
+        page
     }
 
     /// Return a specific version snapshot by its 1-based version number, or None.
@@ -1134,17 +1181,9 @@ impl IpRegistry {
         if version_number == 0 {
             return None;
         }
-        let history: Vec<Version> = env
-            .storage()
+        env.storage()
             .persistent()
-            .get(&DataKey::VersionHistory(listing_id))
-            .unwrap_or_else(|| Vec::new(&env));
-        let idx = version_number - 1;
-        if idx < history.len() {
-            Some(history.get(idx).unwrap())
-        } else {
-            None
-        }
+            .get(&DataKey::VersionHistory(listing_id, version_number))
     }
 
     /// Return the current version number for a listing (0 if never versioned).
@@ -2292,6 +2331,22 @@ mod test {
         assert_eq!(v1.ipfs_hash, Bytes::from_slice(&env, b"QmV1"));
         assert_eq!(v1.price_usdc, 1000);
         assert_eq!(v1.changelog, Bytes::from_slice(&env, b"initial"));
+
+        // Under the per-version-entry storage layout, each snapshot lives at
+        // its own key — writing version 3 must not disturb versions 1 or 2.
+        create_version_helper(&client, &owner, id, b"third", b"QmV3", b"r3", 3000);
+
+        let v1_again = client
+            .get_version(&id, &1)
+            .expect("version 1 must survive later writes");
+        assert_eq!(v1_again.ipfs_hash, Bytes::from_slice(&env, b"QmV1"));
+        assert_eq!(v1_again.price_usdc, 1000);
+
+        let v2_again = client
+            .get_version(&id, &2)
+            .expect("version 2 must survive later writes");
+        assert_eq!(v2_again.ipfs_hash, Bytes::from_slice(&env, b"QmV2"));
+        assert_eq!(v2_again.price_usdc, 2000);
     }
 
     #[test]
@@ -2611,6 +2666,136 @@ mod test {
         let v2 = client.get_version(&id, &2).unwrap();
         assert_eq!(v2.price_usdc, 2000);
         assert_eq!(v2.changelog, Bytes::from_slice(&env, b"changelog2"));
+    }
+
+    /// With the old single Vec<Version> blob, every `create_version` call
+    /// rewrote the whole history wholesale, so cost grew with history length.
+    /// Under per-version keyed storage each call writes exactly one small,
+    /// independent entry, so a long history must not block further writes or
+    /// corrupt earlier entries.
+    #[test]
+    fn test_create_version_storage_boundary_rollover() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let changelog = b"Updated licensing terms and refreshed the embedded metadata bundle.";
+        let ipfs_hash = b"QmRolloverTestHashPayloadForVersionEntry0000000000000000000000";
+        let merkle_root = b"rolloverTestMerkleRootPayload0000000000000000000000000000000000";
+
+        let n: u32 = 80;
+        let mut i: u32 = 0;
+        while i < n {
+            let ver = create_version_helper(
+                &client,
+                &owner,
+                id,
+                changelog,
+                ipfs_hash,
+                merkle_root,
+                1000 + i as i128,
+            );
+            assert_eq!(
+                ver,
+                i + 1,
+                "version numbers must stay sequential across a long history"
+            );
+            i += 1;
+        }
+
+        assert_eq!(client.get_current_version(&id), n);
+
+        // Both the earliest and latest snapshots must be independently
+        // readable and correct — per-call footprint doesn't depend on how
+        // many versions already exist.
+        let v_first = client
+            .get_version(&id, &1)
+            .expect("first version must survive the rollover");
+        assert_eq!(v_first.version_number, 1);
+        assert_eq!(v_first.price_usdc, 1000);
+
+        let v_last = client
+            .get_version(&id, &n)
+            .expect("latest version must be retrievable");
+        assert_eq!(v_last.version_number, n);
+        assert_eq!(v_last.price_usdc, 1000 + (n - 1) as i128);
+    }
+
+    #[test]
+    fn test_get_version_history_page_returns_bounded_slices() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let n: u32 = 5;
+        let mut i: u32 = 0;
+        while i < n {
+            create_version_helper(&client, &owner, id, b"cl", b"QmV", b"r", 1000 + i as i128);
+            i += 1;
+        }
+
+        let page1 = client.get_version_history_page(&id, &0u32, &2u32);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1.get(0).unwrap().version_number, 1);
+        assert_eq!(page1.get(1).unwrap().version_number, 2);
+
+        let page2 = client.get_version_history_page(&id, &2u32, &2u32);
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page2.get(0).unwrap().version_number, 3);
+        assert_eq!(page2.get(1).unwrap().version_number, 4);
+
+        // Requesting past the end returns only what remains.
+        let page3 = client.get_version_history_page(&id, &4u32, &10u32);
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3.get(0).unwrap().version_number, 5);
+
+        // An offset at or beyond the history length returns an empty page.
+        let page4 = client.get_version_history_page(&id, &10u32, &10u32);
+        assert_eq!(page4.len(), 0);
+    }
+
+    #[test]
+    fn test_get_version_history_page_caps_limit_server_side() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let n: u32 = MAX_VERSION_HISTORY_PAGE + 10;
+        let mut i: u32 = 0;
+        while i < n {
+            create_version_helper(&client, &owner, id, b"cl", b"QmV", b"r", 1000 + i as i128);
+            i += 1;
+        }
+
+        // Even requesting far more than exists, a page never exceeds the cap.
+        let page = client.get_version_history_page(&id, &0u32, &u32::MAX);
+        assert_eq!(page.len(), MAX_VERSION_HISTORY_PAGE);
+        assert_eq!(page.get(0).unwrap().version_number, 1);
+        assert_eq!(
+            page.get(MAX_VERSION_HISTORY_PAGE - 1)
+                .unwrap()
+                .version_number,
+            MAX_VERSION_HISTORY_PAGE
+        );
+    }
+
+    #[test]
+    fn test_get_version_history_capped_for_long_history() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let n: u32 = MAX_VERSION_HISTORY_PAGE + 5;
+        let mut i: u32 = 0;
+        while i < n {
+            create_version_helper(&client, &owner, id, b"cl", b"QmV", b"r", 1000 + i as i128);
+            i += 1;
+        }
+
+        // The unpaginated getter is now just the first capped page, not the
+        // full (unbounded) history.
+        let history = client.get_version_history(&id);
+        assert_eq!(history.len(), MAX_VERSION_HISTORY_PAGE);
     }
 
     // ── Batch operations (batch_create_listings) ────────────────────────────

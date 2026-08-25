@@ -4,7 +4,7 @@ import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import { VersionHistoryBrowser } from "./VersionHistoryBrowser";
 import "./ListingCard.css";
 import { CopyButton } from "./CopyButton";
-import { USDC_DECIMALS, IpVersion } from "../lib/types";
+import { USDC_DECIMALS } from "../lib/types";
 
 const IPFS_GATEWAY =
   import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
@@ -16,7 +16,6 @@ interface IListingCard {
     price_usdc: number;
     pendingSwaps?: any[];
     current_version?: number;
-    versions?: IpVersion[];
   };
   wallet: {
     walletId: string;
@@ -94,7 +93,6 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
   const [showVersions, setShowVersions] = useState(false);
 
   const currentVersion = listing.current_version ?? 0;
-  const versions = listing.versions ?? [];
 
   return (
     <article className="lc" aria-label={`Listing #${listing.id}`}>
@@ -191,7 +189,7 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         </button>
         {showVersions && (
           <VersionHistoryBrowser
-            versions={versions}
+            listingId={listing.id}
             currentVersion={currentVersion}
           />
         )}

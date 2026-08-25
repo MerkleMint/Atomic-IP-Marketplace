@@ -106,3 +106,30 @@
   font-family: monospace;
   font-size: 0.75rem;
 }
+
+.vhb__error {
+  font-size: 0.8rem;
+  color: var(--color-danger, #e53e3e);
+  margin: 0.25rem 0;
+}
+
+.vhb__load-more {
+  margin-top: 0.4rem;
+  width: 100%;
+  padding: 0.4rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+.vhb__load-more:hover:not(:disabled) {
+  background: var(--color-surface-hover, #f7fafc);
+}
+
+.vhb__load-more:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
