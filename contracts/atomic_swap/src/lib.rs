@@ -11,6 +11,9 @@ const DEFAULT_DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_COMMIT_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_REVEAL_WINDOW_LEDGERS: u32 = 17_280;
 const DEFAULT_APPEAL_WINDOW_LEDGERS: u32 = 17_280;
+/// Default window an appealed dispute waits for admin's `resolve_dispute` before
+/// anyone may settle it per the original arbiter outcome (stuck-funds guard).
+const DEFAULT_APPEAL_RESOLUTION_WINDOW_LEDGERS: u32 = 17_280;
 /// Default escrow hold period: 7 days at ~6 s/ledger.
 const DEFAULT_HOLD_PERIOD_SECS: u64 = 604_800;
 /// Maximum escrow hold the admin or seller may configure (30 days).
@@ -104,9 +107,17 @@ pub enum ContractError {
     InvalidMultiSigConfig = 44,
     /// Replay attack detected: nonce already used.
     NonceAlreadyUsed = 45,
-    /// `ip_registry`'s advertised `merkle_root` for the listing does not match
-    /// the root registered in `zk_verifier` (or no root is registered there).
-    MerkleRootMismatch = 46,
+    // ── Appeal settlement errors (46-48) ──────────────────────────────────────
+    /// `settle_dispute` called before the appeal window has closed on a dispute
+    /// that was never appealed.
+    AppealWindowStillOpen = 46,
+    /// `settle_dispute` called on an appealed dispute before the appeal
+    /// resolution timeout has elapsed; only the admin's `resolve_dispute` can
+    /// act on it until then.
+    AppealResolutionWindowActive = 47,
+    /// `settle_dispute` called on a swap that is not awaiting settlement
+    /// (not in `PendingAppealWindow` or `Appealed` status).
+    SwapNotAwaitingSettlement = 48,
 }
 
 #[contracttype]
@@ -120,6 +131,13 @@ pub enum SwapStatus {
     ResolvedSeller,
     /// High-value swap awaiting multi-sig approvals before becoming active.
     PendingMultiSig,
+    /// Arbiter vote tallied and outcome recorded, but escrow is held (not paid
+    /// out) until the appeal window closes with no appeal filed.
+    PendingAppealWindow,
+    /// Buyer appealed the finalized outcome before the appeal window closed.
+    /// Escrow remains held; only `resolve_dispute` (admin) or the appeal
+    /// resolution timeout via `settle_dispute` can move funds from here.
+    Appealed,
 }
 
 /// Protocol-wide escrow hold configuration.
@@ -224,6 +242,10 @@ pub struct Dispute {
     /// Set after finalization; buyer may appeal before this ledger.
     pub appeal_deadline_ledger: Option<u32>,
     pub is_appealed: bool,
+    /// Set when an appeal is filed; admin may call `resolve_dispute` before
+    /// this ledger. After it, anyone may call `settle_dispute` to pay out per
+    /// the original arbiter outcome so an inactive admin cannot lock funds.
+    pub appeal_resolve_by_ledger: Option<u32>,
 }
 
 /// Metadata for a registered arbiter.
@@ -317,6 +339,9 @@ pub enum DataKey {
     RevealWindowLedgers,
     /// Ledger window during which the buyer may appeal a finalized dispute.
     AppealWindowLedgers,
+    /// Ledger window during which the admin may act on an appealed dispute
+    /// before anyone may settle it per the original arbiter outcome.
+    AppealResolutionWindowLedgers,
     // ── Escrow hold ───────────────────────────────────────────────────────────
     /// Per-seller hold period override (u64 seconds). Absent = use global default.
     SellerHoldPeriod(Address),
@@ -557,6 +582,16 @@ pub struct DisputeAppealed {
     #[topic]
     pub swap_id: u64,
     pub appellant: Address,
+}
+
+/// Emitted when `settle_dispute` releases escrow held since `finalize_dispute`
+/// — either the appeal window closed with no appeal, or an appealed dispute's
+/// resolution timeout elapsed without admin action.
+#[contractevent]
+pub struct DisputeSettled {
+    #[topic]
+    pub swap_id: u64,
+    pub favor_buyer: bool,
 }
 
 // ── Multi-sig events ──────────────────────────────────────────────────────────
@@ -1526,6 +1561,7 @@ impl AtomicSwap {
             reveal_deadline_ledger: current_ledger + commit_window + reveal_window,
             appeal_deadline_ledger: None,
             is_appealed: false,
+            appeal_resolve_by_ledger: None,
         };
         let dispute_key = DataKey::Dispute(swap_id);
         env.storage().persistent().set(&dispute_key, &dispute);
@@ -1542,6 +1578,11 @@ impl AtomicSwap {
         .publish(&env);
     }
 
+    /// Admin resolves a dispute, either directly (swap still `Disputed`, no
+    /// arbiter vote was needed) or as the appeal remedy (swap `Appealed`, an
+    /// arbiter-voted outcome was appealed by the buyer). Either way this is the
+    /// single, clean payout for the swap's escrow — `finalize_dispute` never
+    /// releases funds itself, so there is no prior transfer to reverse.
     pub fn resolve_dispute(env: Env, swap_id: u64, favor_buyer: bool) {
         let admin: Address = env
             .storage()
@@ -1556,7 +1597,7 @@ impl AtomicSwap {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
-        if swap.status != SwapStatus::Disputed {
+        if swap.status != SwapStatus::Disputed && swap.status != SwapStatus::Appealed {
             env.panic_with_error(ContractError::SwapNotDisputed);
         }
 
@@ -2014,6 +2055,20 @@ impl AtomicSwap {
         );
     }
 
+    /// Admin: configure how long an appealed dispute waits for `resolve_dispute`
+    /// before anyone may settle it per the original arbiter outcome.
+    pub fn set_appeal_resolution_window(env: Env, ledgers: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AppealResolutionWindowLedgers, &ledgers);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AppealResolutionWindowLedgers,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
     // ── Multi-signature approval ───────────────────────────────────────────────
 
     /// Admin: configure the multi-sig scheme for high-value swaps.
@@ -2417,7 +2472,12 @@ impl AtomicSwap {
     // ── Finalize / appeal ──────────────────────────────────────────────────────
 
     /// Finalize a dispute after the reveal window closes.
-    /// Tallies revealed vote weights and distributes funds accordingly.
+    /// Tallies revealed vote weights and records the outcome, but does **not**
+    /// move funds — escrow stays held until the appeal window closes with no
+    /// appeal filed (`settle_dispute`) or an appeal is resolved (`resolve_dispute`
+    /// / `settle_dispute` after the resolution timeout). This holdback is what
+    /// lets an appeal actually reverse the outcome instead of requiring a
+    /// clawback of funds already paid out.
     /// Ties resolve in the buyer's favour (consumer protection default).
     /// Anyone may call this; no auth required.
     pub fn finalize_dispute(env: Env, swap_id: u64) {
@@ -2447,7 +2507,9 @@ impl AtomicSwap {
         // Ties default to buyer (consumer protection).
         let favor_buyer = dispute.vote_weight_buyer >= dispute.vote_weight_seller;
 
-        Self::distribute_dispute_funds(&env, &mut swap, favor_buyer);
+        // Escrow is held, not paid out: status moves to PendingAppealWindow
+        // rather than through distribute_dispute_funds.
+        swap.status = SwapStatus::PendingAppealWindow;
 
         let current = env.ledger().sequence();
         let appeal_window: u32 = env
@@ -2481,16 +2543,20 @@ impl AtomicSwap {
     }
 
     /// Appeal a finalized dispute within the appeal window.
-    /// Only the buyer may appeal. This emits an event signalling admin review;
-    /// funds are not automatically reversed — admin calls resolve_dispute if
-    /// the appeal succeeds.
+    /// Only the buyer may appeal. Escrow is already held (finalize_dispute
+    /// never pays out), so this simply moves the swap to `Appealed` — the
+    /// admin's subsequent `resolve_dispute` call makes the single, clean
+    /// payout, reversing the arbiter outcome if warranted with no clawback
+    /// needed. If the admin never acts, `settle_dispute` pays out per the
+    /// original arbiter outcome once the appeal resolution timeout elapses.
     pub fn appeal_dispute(env: Env, swap_id: u64, appellant: Address) {
         appellant.require_auth();
 
-        let swap: Swap = env
+        let key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env
             .storage()
             .persistent()
-            .get(&DataKey::Swap(swap_id))
+            .get(&key)
             .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
         if appellant != swap.buyer {
             env.panic_with_error(ContractError::ArbiterConflictOfInterest);
@@ -2514,6 +2580,13 @@ impl AtomicSwap {
         }
 
         dispute.is_appealed = true;
+        let current = env.ledger().sequence();
+        let appeal_resolution_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AppealResolutionWindowLedgers)
+            .unwrap_or(DEFAULT_APPEAL_RESOLUTION_WINDOW_LEDGERS);
+        dispute.appeal_resolve_by_ledger = Some(current + appeal_resolution_window);
         env.storage().persistent().set(&dispute_key, &dispute);
         env.storage().persistent().extend_ttl(
             &dispute_key,
@@ -2521,7 +2594,67 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
         );
 
+        swap.status = SwapStatus::Appealed;
+        env.storage().persistent().set(&key, &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
         DisputeAppealed { swap_id, appellant }.publish(&env);
+    }
+
+    /// Settle a dispute's held escrow once it no longer needs admin action:
+    /// either the appeal window closed with no appeal filed (`PendingAppealWindow`),
+    /// or an appeal was filed but the admin never called `resolve_dispute`
+    /// before the appeal resolution timeout (`Appealed`) — this is the
+    /// stuck-funds guard, ensuring an inactive admin cannot permanently lock
+    /// escrow. Both branches pay out per the original arbiter outcome
+    /// (`dispute.outcome`); an admin override only happens via `resolve_dispute`.
+    /// Anyone may call this; no auth required.
+    pub fn settle_dispute(env: Env, swap_id: u64) {
+        let key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+        let dispute_key = DataKey::Dispute(swap_id);
+        let dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapDisputeNotFound));
+
+        let current = env.ledger().sequence();
+        match swap.status {
+            SwapStatus::PendingAppealWindow => {
+                let deadline = dispute.appeal_deadline_ledger.unwrap_or(0);
+                if current <= deadline {
+                    env.panic_with_error(ContractError::AppealWindowStillOpen);
+                }
+            }
+            SwapStatus::Appealed => {
+                let deadline = dispute.appeal_resolve_by_ledger.unwrap_or(0);
+                if current <= deadline {
+                    env.panic_with_error(ContractError::AppealResolutionWindowActive);
+                }
+            }
+            _ => env.panic_with_error(ContractError::SwapNotAwaitingSettlement),
+        }
+
+        let favor_buyer = dispute.outcome == DisputeOutcome::FavorBuyer;
+        Self::distribute_dispute_funds(&env, &mut swap, favor_buyer);
+
+        env.storage().persistent().set(&key, &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        DisputeSettled { swap_id, favor_buyer }.publish(&env);
     }
 
     // ── Dispute read functions ─────────────────────────────────────────────────
@@ -5399,7 +5532,22 @@ mod test {
         assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
         assert_eq!(dispute.vote_weight_buyer, 60);
         assert_eq!(dispute.vote_weight_seller, 40);
-        // Buyer should be refunded
+        // Escrow is held pending the appeal window — no payout yet.
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingAppealWindow)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&seller), 0);
+
+        // Appeal window closes with no appeal — anyone can settle.
+        env.ledger().with_mut(|li| li.sequence_number += 17_281);
+        client.settle_dispute(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedBuyer)
+        );
         assert_eq!(usdc_client.balance(&buyer), 500);
         assert_eq!(usdc_client.balance(&seller), 0);
     }
@@ -5426,6 +5574,11 @@ mod test {
 
         let dispute = client.get_dispute(&swap_id).unwrap();
         assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
+        // Escrow is held until the appeal window closes.
+        assert_eq!(usdc_client.balance(&buyer), 0);
+
+        env.ledger().with_mut(|li| li.sequence_number += 17_281);
+        client.settle_dispute(&swap_id);
         assert_eq!(usdc_client.balance(&buyer), 500);
     }
 
@@ -5476,6 +5629,148 @@ mod test {
 
         let dispute = client.get_dispute(&swap_id).unwrap();
         assert!(dispute.is_appealed);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Appealed)
+        );
+    }
+
+    /// Issue #706: a buyer appeals a FavorSeller arbiter outcome and the
+    /// admin's resolve_dispute call actually reverses the payout to the buyer
+    /// — proving the appeal remedy is reachable and no funds were ever paid
+    /// to the seller in the interim.
+    #[test]
+    fn test_appeal_reverses_favor_seller_outcome_via_resolve_dispute() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&20u32);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        let salt = Bytes::from_slice(&env, b"salt");
+        let commit = make_commitment(&env, false, &salt);
+        client.commit_vote(&swap_id, &arbiter, &commit);
+        env.ledger().with_mut(|li| li.sequence_number += 6);
+        client.reveal_vote(&swap_id, &arbiter, &false, &salt);
+
+        env.ledger().with_mut(|li| li.sequence_number += 6);
+        client.finalize_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.outcome, DisputeOutcome::FavorSeller);
+        // Holdback: neither party has been paid yet.
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&seller), 0);
+
+        // Buyer appeals the FavorSeller outcome.
+        client.appeal_dispute(&swap_id, &buyer);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Appealed)
+        );
+        // Still no payout — appeal is pending admin review.
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&seller), 0);
+
+        // Admin overrides in favor of the buyer.
+        client.resolve_dispute(&swap_id, &true);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedBuyer)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 500);
+        assert_eq!(usdc_client.balance(&seller), 0);
+    }
+
+    /// Issue #706: an appeal filed but never acted on by the admin does not
+    /// permanently lock funds — settle_dispute pays out per the original
+    /// arbiter outcome once the appeal resolution timeout elapses.
+    #[test]
+    fn test_appeal_with_no_admin_action_settles_via_timeout() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&20u32);
+        client.set_appeal_resolution_window(&30u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
+
+        client.appeal_dispute(&swap_id, &buyer);
+        assert_eq!(usdc_client.balance(&buyer), 0);
+
+        // Settling before the resolution timeout must fail — admin still has time.
+        let too_early = client.try_settle_dispute(&swap_id);
+        assert_eq!(
+            too_early,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::AppealResolutionWindowActive as u32
+            )))
+        );
+
+        // Admin never calls resolve_dispute; timeout elapses.
+        env.ledger().with_mut(|li| li.sequence_number += 31);
+        client.settle_dispute(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedBuyer)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 500);
+    }
+
+    /// Regression: settle_dispute must reject settling a swap while the
+    /// appeal window is still open and unappealed — the appeal-window check
+    /// added for the holdback fix must not be bypassable early.
+    #[test]
+    fn test_settle_dispute_rejected_while_appeal_window_open() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&5u32);
+        client.set_reveal_window(&5u32);
+        client.set_appeal_window(&20u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        let result = client.try_settle_dispute(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::AppealWindowStillOpen as u32
+            )))
+        );
     }
 
     #[test]
