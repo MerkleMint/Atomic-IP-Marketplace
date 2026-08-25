@@ -5,6 +5,8 @@ import type { Swap } from "../hooks/useMySwaps";
 import { useWallet } from "../context/WalletContext";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { CancelSwapButton } from "./CancelSwapButton";
+import { HoldPeriodDisplay } from "./HoldPeriodDisplay";
+import { ReleaseSwapActions } from "./ReleaseSwapActions";
 import "./SwapPage.css";
 
 export function SwapPage() {
@@ -170,12 +172,27 @@ export function SwapPage() {
            {swap.status === "Completed" && (
              <div className="swap-status-box swap-status-box--completed">
                 <h2 className="swap-status-box__title">Swap Completed</h2>
-                <p className="swap-status-box__desc">The transaction has been successfully settled. Atomic assets have been transferred.</p>
+                <p className="swap-status-box__desc">The IP has been unlocked for the buyer. The seller's USDC remains in escrow until it is released below.</p>
                 {swap.decryption_key && (
                   <div className="swap-key-box">
                     <span className="swap-key-box__label">Decryption Key</span>
                     <code className="swap-key-box__value">{swap.decryption_key}</code>
                   </div>
+                )}
+                <HoldPeriodDisplay
+                  holdUntil={swap.hold_until}
+                  buyerConfirmed={swap.buyer_confirmed}
+                  status={swap.status}
+                  ledgerTimestamp={ledgerTimestamp}
+                  onExpired={fetchSwap}
+                />
+                {wallet && (
+                  <ReleaseSwapActions
+                    swap={swap}
+                    ledgerTimestamp={ledgerTimestamp}
+                    wallet={wallet}
+                    onSuccess={fetchSwap}
+                  />
                 )}
              </div>
            )}
