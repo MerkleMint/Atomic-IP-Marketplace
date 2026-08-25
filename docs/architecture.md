@@ -151,3 +151,24 @@ sequenceDiagram
     AtomicSwap->>USDC: transfer(contract → seller, amount − fees)
     AtomicSwap-->>Seller: ok (status → ResolvedSeller)
 ```
+
+## IP Registry Version History
+
+`ip_registry` stores each listing's version snapshots as independent
+per-version persistent entries (`VersionHistory(listing_id, version_number)`)
+rather than a single growing vector, so `create_version` writes exactly one
+entry per call regardless of how long a listing's history is.
+
+- **`get_version(listing_id, version_number)`** — direct lookup of one
+  immutable snapshot.
+- **`get_version_history_page(listing_id, offset, limit)`** — paginated
+  read, oldest first; `limit` is capped server-side at
+  `MAX_VERSION_HISTORY_PAGE` (50) regardless of the value requested.
+- **`get_version_history(listing_id)`** — convenience wrapper equivalent to
+  the first page (`offset = 0`); for listings with more than
+  `MAX_VERSION_HISTORY_PAGE` versions, callers must page through
+  `get_version_history_page` to see the rest.
+
+The frontend's `VersionHistoryBrowser` component consumes the paginated
+variant, fetching one page at a time via a "Load more" control instead of
+reading a listing's full history in a single call.

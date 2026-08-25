@@ -1,5 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { USDC_DECIMALS } from "./types";
+import type { IpVersion } from "./types";
 import {
   CONTRACT_ATOMIC_SWAP,
   CONTRACT_IP_REGISTRY,
@@ -531,6 +532,61 @@ export async function getListingCount() {
   const retval = await simulateIpRegistryView("listing_count", []);
   if (!retval) return 0;
   return Number(StellarSdk.scValToNative(retval) ?? 0);
+}
+
+/**
+ * Decode a Version ScVal into a plain JS object.
+ * Version { version_number, timestamp, changelog, ipfs_hash, merkle_root,
+ *           price_usdc, royalty_bps, created_by }
+ */
+function decodeVersionScVal(native: any): IpVersion {
+  const toHex = (v: any) =>
+    v instanceof Uint8Array || Buffer.isBuffer(v)
+      ? Buffer.from(v).toString("hex")
+      : String(v ?? "");
+  const toUtf8 = (v: any) =>
+    v instanceof Uint8Array || Buffer.isBuffer(v)
+      ? Buffer.from(v).toString("utf-8")
+      : String(v ?? "");
+
+  return {
+    version_number: Number(native.version_number ?? 0),
+    timestamp: Number(native.timestamp ?? 0),
+    changelog: toUtf8(native.changelog),
+    ipfs_hash: toHex(native.ipfs_hash),
+    merkle_root: toHex(native.merkle_root),
+    price_usdc: Number(native.price_usdc ?? 0),
+    royalty_bps: Number(native.royalty_bps ?? 0),
+    created_by: String(native.created_by ?? ""),
+  };
+}
+
+/**
+ * Fetch one bounded page of a listing's version history, oldest first.
+ * Mirrors the contract's `get_version_history_page(listing_id, offset, limit)`,
+ * which caps `limit` server-side — callers should page with `offset` rather
+ * than requesting the whole history in one call.
+ *
+ * @param {number} listingId
+ * @param {number} offset - 0-based index into the version sequence
+ * @param {number} limit - max entries to return (server-capped)
+ * @returns {Promise<IpVersion[]>}
+ */
+export async function getVersionHistoryPage(
+  listingId: number,
+  offset: number,
+  limit: number
+): Promise<IpVersion[]> {
+  const retval = await simulateIpRegistryView("get_version_history_page", [
+    StellarSdk.nativeToScVal(listingId, { type: "u64" }),
+    StellarSdk.nativeToScVal(offset, { type: "u32" }),
+    StellarSdk.nativeToScVal(limit, { type: "u32" }),
+  ]);
+
+  if (!retval) return [];
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(decodeVersionScVal);
 }
 
 /**

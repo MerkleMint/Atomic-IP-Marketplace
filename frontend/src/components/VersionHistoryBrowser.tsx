@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { IpVersion } from "../lib/types";
 import { USDC_DECIMALS } from "../lib/types";
+import { getVersionHistoryPage } from "../lib/contractClient";
 import "./VersionHistoryBrowser.css";
 
+const PAGE_SIZE = 10;
+
 interface IVersionHistoryBrowser {
-  versions: IpVersion[];
+  listingId: number;
   currentVersion: number;
 }
 
@@ -14,12 +17,47 @@ function formatTimestamp(ts: number): string {
 }
 
 export function VersionHistoryBrowser({
-  versions,
+  listingId,
   currentVersion,
 }: IVersionHistoryBrowser) {
+  const [versions, setVersions] = useState<IpVersion[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
 
-  if (versions.length === 0) {
+  const fetchFrom = useCallback(async (startOffset: number, replace: boolean) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await getVersionHistoryPage(listingId, startOffset, PAGE_SIZE);
+      setVersions((prev) => (replace ? page : [...prev, ...page]));
+      setOffset(startOffset + page.length);
+      setHasMore(page.length === PAGE_SIZE);
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to load version history."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [listingId]);
+
+  useEffect(() => {
+    setVersions([]);
+    setOffset(0);
+    setHasMore(true);
+    setError(null);
+    if (currentVersion > 0) {
+      fetchFrom(0, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingId, currentVersion]);
+
+  const loadMore = () => fetchFrom(offset, false);
+
+  if (currentVersion === 0 && versions.length === 0 && !loading && !error) {
     return (
       <p className="vhb__empty">
         No version history. Use <em>Create Version</em> to start tracking
@@ -28,12 +66,21 @@ export function VersionHistoryBrowser({
     );
   }
 
+  if (loading && versions.length === 0) {
+    return <p className="vhb__empty">Loading version history…</p>;
+  }
+
+  if (error && versions.length === 0) {
+    return <p className="vhb__error">{error}</p>;
+  }
+
   const sorted = [...versions].sort(
     (a, b) => b.version_number - a.version_number
   );
 
   return (
     <div className="vhb">
+      {error && <p className="vhb__error">{error}</p>}
       <ul className="vhb__list">
         {sorted.map((v) => {
           const isCurrent = v.version_number === currentVersion;
@@ -98,6 +145,16 @@ export function VersionHistoryBrowser({
           );
         })}
       </ul>
+
+      {hasMore && (
+        <button
+          className="vhb__load-more"
+          onClick={loadMore}
+          disabled={loading}
+        >
+          {loading ? "Loading…" : "Load more"}
+        </button>
+      )}
     </div>
   );
 }
