@@ -141,6 +141,65 @@ export async function getSwapsByBuyer(buyerAddress: string) {
 }
 
 /**
+ * Fetch a single page of swap IDs for a buyer by calling get_swaps_by_buyer_page.
+ * Unlike getSwapsByBuyer, this only reads the page(s) spanning
+ * `[offset, offset + limit)`, so its cost doesn't grow with the buyer's
+ * total swap count.
+ * @param {string} buyerAddress - Stellar public key (G...)
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {Promise<number[]>}
+ */
+export async function getSwapsByBuyerPage(
+  buyerAddress: string,
+  offset: number,
+  limit: number
+) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(buyerAddress),
+    { type: "address" }
+  );
+  const offsetScVal = StellarSdk.nativeToScVal(offset, { type: "u32" });
+  const limitScVal = StellarSdk.nativeToScVal(limit, { type: "u32" });
+
+  const retval = await simulateView("get_swaps_by_buyer_page", [
+    addressScVal,
+    offsetScVal,
+    limitScVal,
+  ]);
+  if (!retval) return [];
+
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
+}
+
+const SWAP_INDEX_PAGE_LIMIT = 50;
+
+/**
+ * Fetch a buyer's complete swap ID history by walking get_swaps_by_buyer_page.
+ * Prefer this over getSwapsByBuyer for UI code: each individual RPC call only
+ * ever reads a bounded page rather than the buyer's entire history at once.
+ * @param {string} buyerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getAllSwapsByBuyer(buyerAddress: string) {
+  const ids: number[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await getSwapsByBuyerPage(
+      buyerAddress,
+      offset,
+      SWAP_INDEX_PAGE_LIMIT
+    );
+    ids.push(...page);
+    if (page.length < SWAP_INDEX_PAGE_LIMIT) break;
+    offset += page.length;
+  }
+  return ids;
+}
+
+/**
  * Fetch full swap details for a single swap ID using get_swap contract function.
  * Task 1: single call replaces multiple get_swap_status + get_decryption_key calls.
  * @param {number} swapId
@@ -637,6 +696,63 @@ export async function getSwapsBySeller(sellerAddress: string) {
   const arr = StellarSdk.scValToNative(retval);
   if (!Array.isArray(arr)) return [];
   return arr.map((v) => Number(v));
+}
+
+/**
+ * Fetch a single page of swap IDs for a seller by calling get_swaps_by_seller_page.
+ * Unlike getSwapsBySeller, this only reads the page(s) spanning
+ * `[offset, offset + limit)`, so its cost doesn't grow with the seller's
+ * total swap count.
+ * @param {string} sellerAddress - Stellar public key (G...)
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {Promise<number[]>}
+ */
+export async function getSwapsBySellerPage(
+  sellerAddress: string,
+  offset: number,
+  limit: number
+) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(sellerAddress),
+    { type: "address" }
+  );
+  const offsetScVal = StellarSdk.nativeToScVal(offset, { type: "u32" });
+  const limitScVal = StellarSdk.nativeToScVal(limit, { type: "u32" });
+
+  const retval = await simulateView("get_swaps_by_seller_page", [
+    addressScVal,
+    offsetScVal,
+    limitScVal,
+  ]);
+  if (!retval) return [];
+
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
+}
+
+/**
+ * Fetch a seller's complete swap ID history by walking get_swaps_by_seller_page.
+ * Prefer this over getSwapsBySeller for UI code: each individual RPC call only
+ * ever reads a bounded page rather than the seller's entire history at once.
+ * @param {string} sellerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getAllSwapsBySeller(sellerAddress: string) {
+  const ids: number[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await getSwapsBySellerPage(
+      sellerAddress,
+      offset,
+      SWAP_INDEX_PAGE_LIMIT
+    );
+    ids.push(...page);
+    if (page.length < SWAP_INDEX_PAGE_LIMIT) break;
+    offset += page.length;
+  }
+  return ids;
 }
 
 // ─── USDC Balance ─────────────────────────────────────────────────────────────
