@@ -1,0 +1,61 @@
+.release-swap-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.release-swap-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background-color: #38a169;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, opacity 0.2s ease;
+  min-width: 120px;
+}
+
+.release-swap-btn:hover:not(:disabled) {
+  background-color: #2f855a;
+}
+
+.release-swap-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.release-swap-btn--secondary {
+  background-color: #3182ce;
+}
+
+.release-swap-btn--secondary:hover:not(:disabled) {
+  background-color: #2b6cb0;
+}
+
+.release-swap-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: release-swap-spin 0.7s linear infinite;
+}
+
+@keyframes release-swap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.release-swap-error {
+  font-size: 13px;
+  color: #e53e3e;
+  margin: 0;
+}
