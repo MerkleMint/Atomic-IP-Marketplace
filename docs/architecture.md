@@ -151,3 +151,31 @@ sequenceDiagram
     AtomicSwap->>USDC: transfer(contract → seller, amount − fees)
     AtomicSwap-->>Seller: ok (status → ResolvedSeller)
 ```
+
+## Fee & Royalty Bounds
+
+At settlement (`release_to_seller` and the seller-favoring branch of dispute
+resolution), the seller receives `usdc_amount − protocol_fee − royalty`. Both
+`fee_bps` (`atomic_swap` config) and `royalty_bps` (a listing's `ip_registry`
+field) are independently bounded to `<= 10_000` (100%), but they live in two
+separate contracts and are set at different times — a listing can be created
+long before an admin later raises `fee_bps` via `update_config`.
+
+- **Enforced invariant:** at settlement time, `fee_bps + effective_royalty_bps
+  <= 10_000` always holds, so `seller_amount` can never go negative and the
+  transfer can never panic.
+- **Clamping, not rejection.** Because `update_config` cannot retroactively
+  re-validate every existing listing (and shouldn't — it isn't the right layer
+  to iterate storage), the combined-bps budget is enforced where it is
+  actually spent: `effective_royalty_bps = min(listing.royalty_bps, 10_000 -
+  config.fee_bps)`. Royalty is still computed on the gross sale price
+  (`usdc_amount`), independent of the fee — clamping only caps how much of
+  that budget the royalty portion can claim once the protocol fee has taken
+  its share.
+- **Auditability.** If a later fee change forces a listing's effective royalty
+  below its nominal `royalty_bps`, a `RoyaltyClamped` event is published with
+  both the nominal and effective values, so the degradation is visible
+  off-chain even though settlement itself never fails.
+- **Overflow-safe arithmetic.** Both the fee and royalty computations use
+  `checked_mul`/`checked_div` against 10,000 (matching pattern), panicking
+  with `ContractError::Overflow` rather than wrapping silently.

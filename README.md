@@ -50,7 +50,7 @@ cp .env.example .env
 | `VITE_*` | Frontend copies of the above for Vite |
 | `ATOMIC_SWAP_ADMIN` | Admin address for contract initialization |
 | `ATOMIC_SWAP_FEE_RECIPIENT` | Address that receives protocol fees |
-| `ATOMIC_SWAP_FEE_BPS` | Fee in basis points (e.g. `250` = 2.5%) |
+| `ATOMIC_SWAP_FEE_BPS` | Fee in basis points (e.g. `250` = 2.5%). See [Fee & Royalty Bounds](./docs/architecture.md#fee--royalty-bounds) for how this interacts with a listing's `royalty_bps`. |
 | `ATOMIC_SWAP_CANCEL_DELAY_SECS` | Seconds before a buyer can cancel (e.g. `3600`) |
 
 ### Build contracts
