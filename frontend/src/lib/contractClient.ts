@@ -200,6 +200,84 @@ export async function cancelSwap(
 }
 
 /**
+ * Calls release_to_seller(swap_id) on the atomic_swap contract.
+ * Seller-only: transfers the escrowed USDC to the seller once the dispute
+ * window and escrow hold period have both elapsed.
+ * @param {string|number} swapId
+ * @param {object} wallet  - Connected wallet with signTransaction method
+ * @returns {Promise<void>}
+ */
+export async function releaseToSeller(
+  swapId: number | string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+) {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "release_to_seller",
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Calls confirm_receipt(swap_id) on the atomic_swap contract.
+ * Buyer-only: voluntarily waives the remaining escrow hold period so the
+ * seller may release funds immediately.
+ * @param {string|number} swapId
+ * @param {object} wallet  - Connected wallet with signTransaction method
+ * @returns {Promise<void>}
+ */
+export async function confirmReceipt(
+  swapId: number | string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+) {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "confirm_receipt",
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
  * Encode a ProofNode[] as a Soroban Vec<ProofNode> ScVal.
  *
  * Expected JSON format for each node:
