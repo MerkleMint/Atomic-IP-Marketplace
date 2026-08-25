@@ -132,6 +132,21 @@ pub enum ContractError {
     /// ip_registry's advertised merkle_root for the listing does not match
     /// the root registered in zk_verifier (or no root is registered at all).
     MerkleRootMismatch = 49,
+    // ── Fee governance errors (50-56) ───────────────────────────────────────────
+    /// Caller is not a configured fee-governance signer.
+    NotAGovernanceSigner = 50,
+    /// No FeeProposal found with this id.
+    FeeProposalNotFound = 51,
+    /// Signer has already approved this fee proposal.
+    FeeProposalAlreadyApproved = 52,
+    /// Fee proposal has already been executed.
+    FeeProposalAlreadyExecuted = 53,
+    /// Fee proposal has not yet collected the required number of approvals.
+    FeeGovernanceQuorumNotMet = 54,
+    /// Quorum was reached but the minimum execution timelock has not elapsed.
+    FeeGovernanceTimelockActive = 55,
+    /// Governance configuration is invalid (e.g. required > signer count).
+    InvalidGovernanceConfig = 56,
 }
 
 #[contracttype]
@@ -7526,7 +7541,7 @@ mod test {
     /// A single signer's approval is not enough to execute a 2-of-N proposal,
     /// even though that signer is a configured governance signer.
     #[test]
-    #[should_panic(expected = "Error(Contract, #53)")]
+    #[should_panic(expected = "Error(Contract, #54)")]
     fn test_fee_governance_execute_reverts_on_single_approval() {
         let env = Env::default();
         env.mock_all_auths();
@@ -7612,7 +7627,7 @@ mod test {
 
     /// Non-signers cannot propose a fee update.
     #[test]
-    #[should_panic(expected = "Error(Contract, #49)")]
+    #[should_panic(expected = "Error(Contract, #50)")]
     fn test_fee_governance_propose_rejects_non_signer() {
         let env = Env::default();
         env.mock_all_auths();
@@ -7632,7 +7647,7 @@ mod test {
 
     /// Non-signers cannot approve a fee update.
     #[test]
-    #[should_panic(expected = "Error(Contract, #49)")]
+    #[should_panic(expected = "Error(Contract, #50)")]
     fn test_fee_governance_approve_rejects_non_signer() {
         let env = Env::default();
         env.mock_all_auths();
@@ -7655,7 +7670,7 @@ mod test {
 
     /// A signer cannot approve the same proposal twice.
     #[test]
-    #[should_panic(expected = "Error(Contract, #51)")]
+    #[should_panic(expected = "Error(Contract, #52)")]
     fn test_fee_governance_duplicate_approval_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -7678,7 +7693,7 @@ mod test {
 
     /// A proposal cannot be executed twice.
     #[test]
-    #[should_panic(expected = "Error(Contract, #52)")]
+    #[should_panic(expected = "Error(Contract, #53)")]
     fn test_fee_governance_execute_twice_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -7723,7 +7738,7 @@ mod test {
 
     /// required_approvals exceeding the signer count is rejected.
     #[test]
-    #[should_panic(expected = "Error(Contract, #55)")]
+    #[should_panic(expected = "Error(Contract, #56)")]
     fn test_fee_governance_invalid_config_required_exceeds_signers() {
         let env = Env::default();
         env.mock_all_auths();
