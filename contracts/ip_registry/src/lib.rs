@@ -95,7 +95,6 @@ pub trait IpRegistryInterface {
         new_merkle_root: Bytes,
         new_price_usdc: i128,
         new_royalty_bps: u32,
-        atomic_swap: Address,
     ) -> Result<u32, ContractError>;
     fn get_version(env: Env, listing_id: u64, version_number: u32) -> Option<Version>;
     fn get_current_version(env: Env, listing_id: u64) -> u32;
@@ -110,6 +109,12 @@ pub struct Config {
     pub admin: Address,
     pub ttl_threshold: u32,
     pub ttl_extend_to: u32,
+    /// Canonical atomic_swap contract consulted for the pending-swap check on
+    /// `update_listing`, `transfer_listing_ownership`, `create_version`, and
+    /// `deregister_listing`. Admin-configured only — never accepted as a
+    /// per-call parameter — so a listing owner cannot point the check at a
+    /// spoofed contract to bypass it.
+    pub atomic_swap: Address,
 }
 
 #[contracttype]
@@ -251,6 +256,14 @@ pub struct TtlUpdated {
     pub new_extend_to: u32,
 }
 
+/// Emitted when the admin (re)configures the canonical atomic_swap contract.
+#[contractevent]
+pub struct AtomicSwapUpdated {
+    #[topic]
+    pub admin: Address,
+    pub atomic_swap: Address,
+}
+
 #[contractevent]
 pub struct OwnershipTransferred {
     #[topic]
@@ -371,11 +384,33 @@ fn assert_not_paused(env: &Env) {
     }
 }
 
+/// Reject if the listing has a pending swap, per the *canonical* atomic_swap
+/// contract stored in `Config` — never a caller-supplied address, so a
+/// listing owner cannot spoof this check by pointing it at a different
+/// contract.
+#[cfg(feature = "contract")]
+fn assert_no_pending_swap(env: &Env, cfg: &Config, listing_id: u64) -> Result<(), ContractError> {
+    if AtomicSwapClient::new(env, &cfg.atomic_swap).has_pending_swap(&listing_id) {
+        return Err(ContractError::PendingSwapExists);
+    }
+    Ok(())
+}
+
 #[cfg(feature = "contract")]
 #[contractimpl]
 impl IpRegistry {
-    /// Must be called once before any other function.
-    pub fn initialize(env: Env, admin: Address, ttl_threshold: u32, ttl_extend_to: u32) {
+    /// Must be called once before any other function. `atomic_swap` is the
+    /// canonical atomic_swap contract address — deploy it (or reserve its
+    /// address) before calling `initialize`, since ip_registry never accepts
+    /// this address from a caller after this point. Use `set_atomic_swap` to
+    /// change it later.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        ttl_threshold: u32,
+        ttl_extend_to: u32,
+        atomic_swap: Address,
+    ) {
         if env.storage().persistent().has(&DataKey::Config) {
             panic_with_error!(env, ContractError::AlreadyInitialized);
         }
@@ -383,11 +418,34 @@ impl IpRegistry {
             admin,
             ttl_threshold,
             ttl_extend_to,
+            atomic_swap,
         };
         env.storage().persistent().set(&DataKey::Config, &config);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Config, ttl_threshold, ttl_extend_to);
+    }
+
+    /// Admin-only: (re)configure the canonical atomic_swap contract consulted
+    /// by the pending-swap check. Never accepted from listing owners — only
+    /// the admin can change which contract is trusted for this check.
+    pub fn set_atomic_swap(
+        env: Env,
+        admin: Address,
+        atomic_swap: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let mut cfg = get_config(&env);
+        if cfg.admin != admin {
+            return Err(ContractError::Unauthorized);
+        }
+        cfg.atomic_swap = atomic_swap.clone();
+        env.storage().persistent().set(&DataKey::Config, &cfg);
+        extend_persistent(&env, &DataKey::Config, &cfg);
+
+        AtomicSwapUpdated { admin, atomic_swap }.publish(&env);
+
+        Ok(())
     }
 
     /// Admin-only: update TTL parameters. Emits a TtlUpdated event.
@@ -836,7 +894,6 @@ impl IpRegistry {
         new_merkle_root: Bytes,
         new_price_usdc: i128,
         new_royalty_bps: u32,
-        atomic_swap: Address,
     ) -> Result<(), ContractError> {
         assert_not_paused(&env);
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
@@ -855,12 +912,12 @@ impl IpRegistry {
             return Err(ContractError::Unauthorized);
         }
 
-        // Check for pending swap before updating
-        if AtomicSwapClient::new(&env, &atomic_swap).has_pending_swap(&listing_id) {
-            return Err(ContractError::PendingSwapExists);
-        }
-
         let cfg = get_config(&env);
+
+        // Check for pending swap before updating, against the canonical
+        // atomic_swap address only.
+        assert_no_pending_swap(&env, &cfg, listing_id)?;
+
         listing.ipfs_hash = new_ipfs_hash.clone();
         listing.merkle_root = new_merkle_root.clone();
         listing.price_usdc = new_price_usdc;
@@ -887,11 +944,12 @@ impl IpRegistry {
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
+    /// Rejects unconditionally if a pending swap exists for the listing —
+    /// there is no way to opt out of this check.
     pub fn deregister_listing(
         env: Env,
         owner: Address,
         listing_id: u64,
-        atomic_swap: Option<Address>,
     ) -> Result<(), ContractError> {
         owner.require_auth();
 
@@ -906,11 +964,8 @@ impl IpRegistry {
             return Err(ContractError::Unauthorized);
         }
 
-        if let Some(swap_addr) = atomic_swap {
-            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
-                return Err(ContractError::PendingSwapExists);
-            }
-        }
+        let cfg = get_config(&env);
+        assert_no_pending_swap(&env, &cfg, listing_id)?;
 
         env.storage().persistent().remove(&key);
 
@@ -928,7 +983,6 @@ impl IpRegistry {
         if ids.is_empty() {
             env.storage().persistent().remove(&idx_key);
         } else {
-            let cfg = get_config(&env);
             env.storage().persistent().set(&idx_key, &ids);
             extend_persistent(&env, &idx_key, &cfg);
         }
@@ -945,7 +999,6 @@ impl IpRegistry {
         owner: Address,
         listing_id: u64,
         new_owner: Address,
-        atomic_swap: Address,
     ) -> Result<(), ContractError> {
         owner.require_auth();
 
@@ -960,12 +1013,11 @@ impl IpRegistry {
             return Err(ContractError::Unauthorized);
         }
 
-        // Check for pending swap before transferring
-        if AtomicSwapClient::new(&env, &atomic_swap).has_pending_swap(&listing_id) {
-            return Err(ContractError::PendingSwapExists);
-        }
-
         let cfg = get_config(&env);
+
+        // Check for pending swap before transferring, against the canonical
+        // atomic_swap address only.
+        assert_no_pending_swap(&env, &cfg, listing_id)?;
 
         // Remove listing_id from old owner's index
         let old_idx_key = DataKey::OwnerIndex(owner.clone());
@@ -1029,7 +1081,6 @@ impl IpRegistry {
         new_merkle_root: Bytes,
         new_price_usdc: i128,
         new_royalty_bps: u32,
-        atomic_swap: Address,
     ) -> Result<u32, ContractError> {
         assert_not_paused(&env);
         if changelog.is_empty() || new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
@@ -1054,11 +1105,10 @@ impl IpRegistry {
             return Err(ContractError::Unauthorized);
         }
 
-        if AtomicSwapClient::new(&env, &atomic_swap).has_pending_swap(&listing_id) {
-            return Err(ContractError::PendingSwapExists);
-        }
-
         let cfg = get_config(&env);
+
+        // Pending-swap check against the canonical atomic_swap address only.
+        assert_no_pending_swap(&env, &cfg, listing_id)?;
 
         // Determine next version number — forward-only, never decrements.
         let current_version: u32 = env
@@ -1206,18 +1256,25 @@ mod test {
     const THRESHOLD: u32 = 100_000;
     const EXTEND_TO: u32 = 6_312_000;
 
+    /// Every mutation guarded by the pending-swap check now unconditionally
+    /// consults the canonical `Config.atomic_swap` address, so even tests that
+    /// don't care about swaps need a real, callable AtomicSwap contract wired
+    /// up at initialize time.
     fn setup() -> (Env, IpRegistryClient<'static>, Address) {
+        use atomic_swap::AtomicSwap;
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
+        let swap_id = env.register(AtomicSwap, ());
         let client = IpRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &THRESHOLD, &EXTEND_TO);
+        client.initialize(&admin, &THRESHOLD, &EXTEND_TO, &swap_id);
         (env, client, admin)
     }
 
-    /// Like setup(), but also pre-registers an AtomicSwap contract so tests that
-    /// need cross-contract calls can do so without resetting the event buffer mid-test.
+    /// Like setup(), but also returns the canonical AtomicSwap contract's
+    /// address so tests can seed real pending-swap state into the exact
+    /// contract the registry is configured to trust.
     fn setup_with_swap() -> (Env, IpRegistryClient<'static>, Address, Address) {
         use atomic_swap::AtomicSwap;
         let env = Env::default();
@@ -1226,7 +1283,7 @@ mod test {
         let swap_id = env.register(AtomicSwap, ());
         let client = IpRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &THRESHOLD, &EXTEND_TO);
+        client.initialize(&admin, &THRESHOLD, &EXTEND_TO, &swap_id);
         (env, client, admin, swap_id)
     }
 
@@ -1273,6 +1330,26 @@ mod test {
         let attacker = Address::generate(&env);
         let result = client.try_update_ttl(&attacker, &1, &1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_atomic_swap_authorized() {
+        use atomic_swap::AtomicSwap;
+        let (env, client, admin) = setup();
+        let new_swap = env.register(AtomicSwap, ());
+        client.set_atomic_swap(&admin, &new_swap);
+        assert_eq!(client.get_config().atomic_swap, new_swap);
+    }
+
+    #[test]
+    fn test_set_atomic_swap_unauthorized() {
+        let (env, client, _admin) = setup();
+        let attacker = Address::generate(&env);
+        let spoofed_swap = Address::generate(&env);
+        let result = client.try_set_atomic_swap(&attacker, &spoofed_swap);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+        // Config must be unchanged.
+        assert_ne!(client.get_config().atomic_swap, spoofed_swap);
     }
 
     #[test]
@@ -1618,7 +1695,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        client.deregister_listing(&owner, &id, &None);
+        client.deregister_listing(&owner, &id);
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
@@ -1629,7 +1706,7 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        let result = client.try_deregister_listing(&attacker, &id, &None);
+        let result = client.try_deregister_listing(&attacker, &id);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
     }
@@ -1644,18 +1721,190 @@ mod test {
         assert_eq!(client.list_by_owner(&owner).len(), 1);
 
         // Deregister the only listing
-        client.deregister_listing(&owner, &id, &None);
+        client.deregister_listing(&owner, &id);
 
         // Verify listing is gone and owner index is empty
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
 
+    /// deregister_listing no longer accepts an atomic_swap parameter at all,
+    /// so there is no opt-out: a real pending swap must block deregistration
+    /// unconditionally.
+    #[test]
+    fn test_deregister_listing_rejects_pending_swap() {
+        use atomic_swap::{DataKey as SwapDataKey, Swap, SwapStatus};
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        let result = client.try_deregister_listing(&owner, &id);
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+        assert!(client.get_listing(&id).is_some());
+    }
+
+    /// Same bypass-attempt proof as update/transfer/create_version: an
+    /// attacker-deployed AtomicSwap contract cannot influence the check
+    /// because there is no parameter to route the check to it.
+    #[test]
+    fn test_deregister_listing_ignores_attacker_deployed_swap_contract() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let attacker_swap = env.register(AtomicSwap, ());
+        assert!(!AtomicSwapClient::new(&env, &attacker_swap).has_pending_swap(&id));
+
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        let result = client.try_deregister_listing(&owner, &id);
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+        assert!(client.get_listing(&id).is_some());
+    }
+
+    /// End-to-end: a seller cannot use deregister_listing or
+    /// transfer_listing_ownership to sidestep an in-flight swap, and the
+    /// buyer's swap remains fully resolvable (here, via cancel_swap) the
+    /// whole time because the listing the swap references is never removed
+    /// or reassigned out from under it.
+    #[test]
+    fn test_pending_swap_remains_resolvable_despite_blocked_deregister_and_transfer() {
+        use atomic_swap::{AtomicSwapClient as RealAtomicSwapClient, DataKey as SwapDataKey, Swap, SwapStatus};
+        use soroban_sdk::token;
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        // Fully initialize the canonical atomic_swap contract so its own
+        // Config-dependent calls (cancel_swap) work.
+        let swap_client = RealAtomicSwapClient::new(&env, &swap_contract_id);
+        let cancel_delay_secs: u64 = 60;
+        swap_client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &cancel_delay_secs,
+            &3600u64,
+            &Address::generate(&env),
+            &client.address,
+        );
+
+        // Fund the swap contract as if it were holding the buyer's escrow.
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(usdc_admin)
+            .address();
+        let usdc_amount: i128 = 1000;
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&swap_contract_id, &usdc_amount);
+
+        // Seed a real Pending swap referencing this listing.
+        let swap_id: u64 = 1;
+        let created_at = env.ledger().timestamp();
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: buyer.clone(),
+                seller: owner.clone(),
+                usdc_amount,
+                usdc_token: usdc_id.clone(),
+                created_at,
+                expires_at: created_at + 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        // Seller cannot deregister or transfer away the listing mid-swap.
+        assert_eq!(
+            client.try_deregister_listing(&owner, &id),
+            Err(Ok(ContractError::PendingSwapExists))
+        );
+        assert_eq!(
+            client.try_transfer_listing_ownership(&owner, &id, &new_owner),
+            Err(Ok(ContractError::PendingSwapExists))
+        );
+
+        // Listing survived both attempts, so atomic_swap's own get_listing-based
+        // resolution paths remain intact.
+        let listing = client.get_listing(&id).expect("listing must survive blocked bypass attempts");
+        assert_eq!(listing.owner, owner);
+
+        // The buyer can still resolve the swap (here: cancel and reclaim escrow)
+        // once the cancel delay elapses.
+        env.ledger()
+            .with_mut(|li| li.timestamp = created_at + cancel_delay_secs + 1);
+        swap_client.cancel_swap(&swap_id);
+
+        assert_eq!(token::Client::new(&env, &usdc_id).balance(&buyer), usdc_amount);
+    }
+
     #[test]
     fn test_already_initialized() {
-        let (_env, client, admin) = setup();
+        let (env, client, admin) = setup();
+        let swap_id = Address::generate(&env);
         assert!(client
-            .try_initialize(&admin, &THRESHOLD, &EXTEND_TO)
+            .try_initialize(&admin, &THRESHOLD, &EXTEND_TO, &swap_id)
             .is_err());
     }
 
@@ -1748,7 +1997,8 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &THRESHOLD, &EXTEND_TO);
+        let swap_id = Address::generate(&env);
+        client.initialize(&admin, &THRESHOLD, &EXTEND_TO, &swap_id);
         let id = client.register_ip(
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
@@ -1762,12 +2012,12 @@ mod test {
 
     #[test]
     fn test_transfer_listing_ownership_success() {
-        let (env, client, _admin, atomic_swap) = setup_with_swap();
+        let (env, client, _admin, _atomic_swap) = setup_with_swap();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 500);
 
-        client.transfer_listing_ownership(&owner, &id, &new_owner, &atomic_swap);
+        client.transfer_listing_ownership(&owner, &id, &new_owner);
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, new_owner);
@@ -1782,11 +2032,9 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
 
-        let result =
-            client.try_transfer_listing_ownership(&attacker, &id, &new_owner, &atomic_swap);
+        let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 
         // Ownership unchanged
@@ -1799,25 +2047,21 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
 
-        let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner, &atomic_swap);
+        let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
     }
 
     #[test]
     fn test_transfer_listing_ownership_rejects_pending_swap() {
-        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+        use atomic_swap::{DataKey as SwapDataKey, Swap, SwapStatus};
 
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
 
-        env.mock_all_auths();
-
-        // Register a real AtomicSwap contract and seed a Pending swap for this listing.
-        let swap_contract_id = env.register(AtomicSwap, ());
+        // Seed a Pending swap in the registry's canonical atomic_swap contract.
         let swap_id: u64 = 1;
         env.as_contract(&swap_contract_id, || {
             let swap = Swap {
@@ -1842,13 +2086,62 @@ mod test {
                 .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
         });
 
-        let result =
-            client.try_transfer_listing_ownership(&owner, &id, &new_owner, &swap_contract_id);
+        let result = client.try_transfer_listing_ownership(&owner, &id, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
 
         // Ownership unchanged
         let listing = client.get_listing(&id).unwrap();
         assert_eq!(listing.owner, owner);
+    }
+
+    /// An attacker cannot bypass the pending-swap check by deploying their own
+    /// AtomicSwap-shaped contract: there is no parameter to point the check at
+    /// it, and the registry always consults the address configured at
+    /// `initialize`/`set_atomic_swap`, never a caller-supplied one.
+    #[test]
+    fn test_transfer_listing_ownership_ignores_attacker_deployed_swap_contract() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
+
+        // A second, attacker-controlled AtomicSwap contract with no pending
+        // swap recorded — always returns false from has_pending_swap.
+        let attacker_swap = env.register(AtomicSwap, ());
+        assert!(!AtomicSwapClient::new(&env, &attacker_swap).has_pending_swap(&id));
+
+        // Seed a real Pending swap only in the canonical, configured contract.
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        // The call signature has no atomic_swap parameter at all, so there is
+        // no way to route the check to attacker_swap; it must still fail.
+        let result = client.try_transfer_listing_ownership(&owner, &id, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+        assert_eq!(client.get_listing(&id).unwrap().owner, owner);
     }
 
     // ── Pause/Unpause tests ────────────────────────────────────────────────
@@ -1914,7 +2207,6 @@ mod test {
     fn test_update_listing_blocked_when_paused() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
         client.update_listing(
@@ -1924,7 +2216,6 @@ mod test {
             &Bytes::from_slice(&env, b"rootNew"),
             &2000i128,
             &0u32,
-            &atomic_swap,
         );
     }
 
@@ -1932,7 +2223,6 @@ mod test {
     fn test_update_listing_rejects_empty_ipfs_hash() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
         let result = client.try_update_listing(
@@ -1942,7 +2232,6 @@ mod test {
             &Bytes::from_slice(&env, b"newRoot"),
             &2000i128,
             &0u32,
-            &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -1951,7 +2240,6 @@ mod test {
     fn test_update_listing_rejects_empty_merkle_root() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let atomic_swap = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
         let result = client.try_update_listing(
@@ -1961,22 +2249,19 @@ mod test {
             &Bytes::new(&env),
             &2000i128,
             &0u32,
-            &atomic_swap,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
     fn test_update_listing_rejects_pending_swap() {
-        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+        use atomic_swap::{DataKey as SwapDataKey, Swap, SwapStatus};
 
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
-        env.mock_all_auths();
-        // Register a real AtomicSwap contract and seed a Pending swap for this listing.
-        let swap_contract_id = env.register(AtomicSwap, ());
+        // Seed a Pending swap in the registry's canonical atomic_swap contract.
         let swap_id: u64 = 1;
         env.as_contract(&swap_contract_id, || {
             let swap = Swap {
@@ -2008,7 +2293,55 @@ mod test {
             &Bytes::from_slice(&env, b"newRoot"),
             &2000i128,
             &0u32,
-            &swap_contract_id,
+        );
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+    }
+
+    /// Same bypass-attempt proof as the transfer-ownership case: an
+    /// attacker-deployed AtomicSwap contract cannot influence the check
+    /// because update_listing no longer accepts an atomic_swap parameter.
+    #[test]
+    fn test_update_listing_ignores_attacker_deployed_swap_contract() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let attacker_swap = env.register(AtomicSwap, ());
+        assert!(!AtomicSwapClient::new(&env, &attacker_swap).has_pending_swap(&id));
+
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        let result = client.try_update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::from_slice(&env, b"newRoot"),
+            &2000i128,
+            &0u32,
         );
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
     }
@@ -2031,7 +2364,7 @@ mod test {
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
         // Deregister should succeed even when paused (read-only operation)
-        client.deregister_listing(&owner, &id, &None);
+        client.deregister_listing(&owner, &id);
         assert!(client.get_listing(&id).is_none());
     }
 
@@ -2208,7 +2541,7 @@ mod test {
             .with_mut(|li| li.sequence_number += near_expiry);
 
         // This operation should trigger extend_ttl on the idx_key DataKey::OwnerIndex
-        client.deregister_listing(&owner, &id1, &None);
+        client.deregister_listing(&owner, &id1);
 
         // Advance another THRESHOLD ledgers. Without extension, OwnerIndex would be gone.
         env.ledger().with_mut(|li| li.sequence_number += THRESHOLD);
@@ -2226,7 +2559,6 @@ mod test {
 
     #[test]
     fn test_update_listing_emits_ip_updated_event() {
-        use atomic_swap::AtomicSwap;
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmOldHash", b"oldRoot", 1000);
@@ -2235,17 +2567,8 @@ mod test {
         let new_root = Bytes::from_slice(&env, b"newRoot");
         let new_price: i128 = 2500;
         let new_royalty: u32 = 750;
-        let atomic_swap = env.register(AtomicSwap, ());
 
-        client.update_listing(
-            &owner,
-            &id,
-            &new_hash,
-            &new_root,
-            &new_price,
-            &new_royalty,
-            &atomic_swap,
-        );
+        client.update_listing(&owner, &id, &new_hash, &new_root, &new_price, &new_royalty);
 
         // Verify all four fields were written to storage.
         // IpUpdated is emitted unconditionally at the end of update_listing;
@@ -2270,9 +2593,7 @@ mod test {
         root: &[u8],
         price: i128,
     ) -> u32 {
-        use atomic_swap::AtomicSwap;
         let env = &client.env;
-        let swap_addr = env.register(AtomicSwap, ());
         client.create_version(
             owner,
             &listing_id,
@@ -2281,7 +2602,6 @@ mod test {
             &Bytes::from_slice(env, root),
             &price,
             &0u32,
-            &swap_addr,
         )
     }
 
@@ -2400,11 +2720,9 @@ mod test {
 
     #[test]
     fn test_create_version_unauthorized() {
-        use atomic_swap::AtomicSwap;
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
-        let swap_addr = env.register(AtomicSwap, ());
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
         let result = client.try_create_version(
@@ -2415,7 +2733,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &swap_addr,
         );
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert_eq!(client.get_current_version(&id), 0);
@@ -2423,10 +2740,8 @@ mod test {
 
     #[test]
     fn test_create_version_listing_not_found() {
-        use atomic_swap::AtomicSwap;
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let swap_addr = env.register(AtomicSwap, ());
 
         let result = client.try_create_version(
             &owner,
@@ -2436,7 +2751,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &swap_addr,
         );
         assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
     }
@@ -2447,7 +2761,6 @@ mod test {
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
-        // Validation errors fire before the swap check, so no contract needed.
         let result = client.try_create_version(
             &owner,
             &id,
@@ -2456,7 +2769,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &Address::generate(&env),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -2475,7 +2787,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &Address::generate(&env),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -2494,21 +2805,18 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &0i128,
             &0u32,
-            &Address::generate(&env),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
     }
 
     #[test]
     fn test_create_version_rejects_pending_swap() {
-        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+        use atomic_swap::{DataKey as SwapDataKey, Swap, SwapStatus};
 
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
 
-        env.mock_all_auths();
-        let swap_contract_id = env.register(AtomicSwap, ());
         let swap_id: u64 = 1;
         env.as_contract(&swap_contract_id, || {
             let swap = Swap {
@@ -2541,7 +2849,56 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &swap_contract_id,
+        );
+        assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
+        assert_eq!(client.get_current_version(&id), 0);
+    }
+
+    /// Same bypass-attempt proof for create_version: no atomic_swap parameter
+    /// exists to redirect the check to an attacker-deployed contract.
+    #[test]
+    fn test_create_version_ignores_attacker_deployed_swap_contract() {
+        use atomic_swap::{AtomicSwap, DataKey as SwapDataKey, Swap, SwapStatus};
+
+        let (env, client, _admin, swap_contract_id) = setup_with_swap();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+
+        let attacker_swap = env.register(AtomicSwap, ());
+        assert!(!AtomicSwapClient::new(&env, &attacker_swap).has_pending_swap(&id));
+
+        let swap_id: u64 = 1;
+        env.as_contract(&swap_contract_id, || {
+            let swap = Swap {
+                listing_id: id,
+                buyer: Address::generate(&env),
+                seller: owner.clone(),
+                usdc_amount: 1000,
+                usdc_token: Address::generate(&env),
+                created_at: 0,
+                expires_at: 9999,
+                status: SwapStatus::Pending,
+                decryption_key: None,
+                confirmed_at_ledger: None,
+                hold_until: None,
+                buyer_confirmed: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::Swap(swap_id), &swap);
+            env.storage()
+                .persistent()
+                .set(&SwapDataKey::ActiveListingSwap(id), &swap_id);
+        });
+
+        let result = client.try_create_version(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"changelog"),
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"newroot"),
+            &1000i128,
+            &0u32,
         );
         assert_eq!(result, Err(Ok(ContractError::PendingSwapExists)));
         assert_eq!(client.get_current_version(&id), 0);
@@ -2554,7 +2911,6 @@ mod test {
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
-        // Paused check fires before swap check, so no registered swap needed.
         client.create_version(
             &owner,
             &id,
@@ -2563,7 +2919,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &0u32,
-            &Address::generate(&env),
         );
     }
 
@@ -2645,7 +3000,6 @@ mod test {
             &Bytes::from_slice(&env, b"newroot"),
             &1000i128,
             &10_001u32,
-            &Address::generate(&env),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }

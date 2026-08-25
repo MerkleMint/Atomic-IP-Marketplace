@@ -51,7 +51,8 @@ if ! stellar contract invoke \
   initialize \
   --admin "$ATOMIC_SWAP_ADMIN" \
   --ttl_threshold "$IP_REGISTRY_TTL_THRESHOLD" \
-  --ttl_extend_to "$IP_REGISTRY_TTL_EXTEND_TO"; then
+  --ttl_extend_to "$IP_REGISTRY_TTL_EXTEND_TO" \
+  --atomic_swap "$ATOMIC_SWAP"; then
   echo "Failed to initialize ip_registry contract: $IP_REGISTRY" >&2
   exit 1
 fi

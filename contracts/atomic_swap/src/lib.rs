@@ -3330,7 +3330,10 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(env, &registry_id);
         let admin = Address::generate(env);
-        registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        // ip_registry's pending-swap check is never exercised by atomic_swap's
+        // own test suite (only read-only get_listing/register_ip are called
+        // cross-contract here), so this address is a placeholder.
+        registry.initialize(&admin, &100_000u32, &6_312_000u32, &Address::generate(env));
         let listing_id = registry.register_ip(
             seller,
             &Bytes::from_slice(env, b"QmHash"),
@@ -3901,7 +3904,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let registry_admin = Address::generate(&env);
-        registry.initialize(&registry_admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&registry_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
@@ -4289,7 +4292,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
-        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
@@ -4523,7 +4526,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let admin = Address::generate(&env);
-        registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
@@ -4594,7 +4597,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let admin = Address::generate(&env);
-        registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
@@ -4667,7 +4670,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
-        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
@@ -4742,7 +4745,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
-        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         // Listing created while royalty_bps = 6000 is still well within the
         // combined-bps budget (fee_bps is 0 at this point).
         let listing_id = registry.register_ip(
@@ -4817,7 +4820,7 @@ mod test {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
-        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
