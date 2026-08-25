@@ -37,7 +37,15 @@ sequenceDiagram
     %% 5. Seller confirms swap (reveals decryption key; USDC stays escrowed)
     Seller->>AtomicSwap: confirm_swap(swap_id, decryption_key, proof_path)
     Note over AtomicSwap: asserts swap.status == Pending
-    AtomicSwap-->>Seller: ok (status → Completed; hold_until snapshotted)
+    AtomicSwap->>IPRegistry: get_listing(listing_id)
+    IPRegistry-->>AtomicSwap: Listing { merkle_root, ... }
+    AtomicSwap->>ZKVerifier: get_merkle_root(listing_id)
+    ZKVerifier-->>AtomicSwap: merkle_root
+    Note over AtomicSwap: reverts (MerkleRootMismatch) unless the two roots match
+    AtomicSwap->>USDC: transfer(contract → fee_recipient, fee)
+    AtomicSwap->>USDC: transfer(contract → seller, amount - fee)
+    USDC-->>AtomicSwap: ok
+    AtomicSwap-->>Seller: ok (status → Completed)
 
     %% 6. Buyer retrieves decryption key
     Buyer->>AtomicSwap: get_decryption_key(swap_id)
@@ -49,6 +57,34 @@ sequenceDiagram
     %% is required.
     Note over Seller,Buyer: See Escrow Hold Period for the release_to_seller step
 ```
+
+### Merkle Root Binding
+
+`ip_registry` and `zk_verifier` each hold their own independently-writable copy
+of a listing's Merkle root (`Listing.merkle_root` and
+`DataKey::MerkleRoot(listing_id)`, respectively). Nothing prevented these from
+drifting apart: a seller could advertise one root via `ip_registry` — the value
+a buyer inspects with `get_listing` before committing funds — while a different
+root is the one actually enforced by `zk_verifier.verify_partial_proof`.
+
+**Source of truth: `ip_registry`.** It's what a buyer reads and reasons about
+pre-swap, so it's the value being trusted. `zk_verifier`'s copy must match it,
+not the other way around.
+
+**Enforcement point: `atomic_swap::confirm_swap`.** The check is enforced at
+confirm time — the single choke point where funds actually move — rather than
+at `register_ip`/`update_listing`/`create_version`. Before verifying the ZK
+proof, `confirm_swap` reads `ip_registry.get_listing(listing_id).merkle_root`
+and `zk_verifier.get_merkle_root(listing_id)` and reverts with
+`MerkleRootMismatch` if they differ (or if `zk_verifier` has no root
+registered), before any proof verification runs.
+
+Enforcing at registration time instead was rejected: it would force
+`ip_registry` to take a hard dependency on `zk_verifier` on every mutation
+path, and would break a seller who legitimately sets the root in `zk_verifier`
+*after* creating the listing. Checking only at the swap choke point avoids a
+redundant dual-write burden on every listing edit — only the swap path needs
+the guard.
 
 ---
 
@@ -173,59 +209,30 @@ sequenceDiagram
     AtomicSwap-->>Seller: ok (status → ResolvedSeller)
 ```
 
-## Dispute Appeal Flow
+## Fee & Royalty Bounds
 
-After arbiters commit/reveal votes on a raised dispute, `finalize_dispute`
-tallies the vote weights and records an outcome — but escrow stays **held**,
-not paid out, until the appeal window closes. This holdback is what makes an
-appeal an actual remedy: since nothing was transferred yet, an appeal can
-change the outcome with a single clean payout instead of clawing back funds
-already sent to the losing party's counterpart.
+At settlement (`release_to_seller` and the seller-favoring branch of dispute
+resolution), the seller receives `usdc_amount − protocol_fee − royalty`. Both
+`fee_bps` (`atomic_swap` config) and `royalty_bps` (a listing's `ip_registry`
+field) are independently bounded to `<= 10_000` (100%), but they live in two
+separate contracts and are set at different times — a listing can be created
+long before an admin later raises `fee_bps` via `update_config`.
 
-- **`finalize_dispute`** (anyone, no auth): tallies revealed vote weights,
-  sets `dispute.outcome` and `appeal_deadline_ledger`, and moves
-  `swap.status` to `PendingAppealWindow`. No funds move.
-- **No appeal filed:** once `appeal_deadline_ledger` passes, anyone may call
-  `settle_dispute` to pay out per the recorded arbiter outcome.
-- **Appeal filed:** only the buyer may call `appeal_dispute`, and only before
-  `appeal_deadline_ledger`. This moves `swap.status` to `Appealed` and sets
-  `appeal_resolution_deadline_ledger`. From here:
-  - The **admin** may call `resolve_dispute` at any time to make the single,
-    final payout — reversing the arbiter outcome if warranted.
-  - If the admin never acts, anyone may call `settle_dispute` once
-    `appeal_resolution_deadline_ledger` passes; it pays out per the
-    **original** arbiter outcome, so an inactive admin can never
-    permanently lock the escrow.
-
-```mermaid
-sequenceDiagram
-    actor Buyer
-    actor Admin
-    participant AtomicSwap as atomic_swap
-    participant USDC as USDC Token
-
-    Note over AtomicSwap: arbiters commit/reveal votes (swap.status == Disputed)
-
-    AtomicSwap->>AtomicSwap: finalize_dispute(swap_id)
-    Note over AtomicSwap: outcome recorded; status → PendingAppealWindow (escrow held)
-
-    alt No appeal before appeal_deadline_ledger
-        AtomicSwap->>AtomicSwap: settle_dispute(swap_id)
-        AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
-        AtomicSwap-->>AtomicSwap: ok (status → ResolvedBuyer/ResolvedSeller)
-    else Buyer appeals before appeal_deadline_ledger
-        Buyer->>AtomicSwap: appeal_dispute(swap_id, buyer)
-        Note over AtomicSwap: status → Appealed; appeal_resolution_deadline_ledger set
-
-        alt Admin resolves the appeal
-            Admin->>AtomicSwap: resolve_dispute(swap_id, favor_buyer)
-            AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
-            AtomicSwap-->>Admin: ok (status → ResolvedBuyer/ResolvedSeller)
-        else Admin never acts — resolution timeout elapses
-            AtomicSwap->>AtomicSwap: settle_dispute(swap_id)
-            Note over AtomicSwap: pays per the ORIGINAL arbiter outcome
-            AtomicSwap->>USDC: transfer(contract → winner, amount − fees)
-            AtomicSwap-->>AtomicSwap: ok (status → ResolvedBuyer/ResolvedSeller)
-        end
-    end
-```
+- **Enforced invariant:** at settlement time, `fee_bps + effective_royalty_bps
+  <= 10_000` always holds, so `seller_amount` can never go negative and the
+  transfer can never panic.
+- **Clamping, not rejection.** Because `update_config` cannot retroactively
+  re-validate every existing listing (and shouldn't — it isn't the right layer
+  to iterate storage), the combined-bps budget is enforced where it is
+  actually spent: `effective_royalty_bps = min(listing.royalty_bps, 10_000 -
+  config.fee_bps)`. Royalty is still computed on the gross sale price
+  (`usdc_amount`), independent of the fee — clamping only caps how much of
+  that budget the royalty portion can claim once the protocol fee has taken
+  its share.
+- **Auditability.** If a later fee change forces a listing's effective royalty
+  below its nominal `royalty_bps`, a `RoyaltyClamped` event is published with
+  both the nominal and effective values, so the degradation is visible
+  off-chain even though settlement itself never fails.
+- **Overflow-safe arithmetic.** Both the fee and royalty computations use
+  `checked_mul`/`checked_div` against 10,000 (matching pattern), panicking
+  with `ContractError::Overflow` rather than wrapping silently.
