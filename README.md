@@ -9,6 +9,11 @@ Soroban smart contracts for atomic IP swaps using USDC, IP registry, and ZK veri
 - **`ip_registry`**: Register and query IP assets with TTL. Version history is stored per-version and retrieved through paginated reads — see [docs/architecture.md](./docs/architecture.md#ip-registry-version-history).
 - **`zk_verifier`**: Merkle tree ZK proof verification with TTL.
 
+### Governance vs. admin trust
+
+- **Fee changes are on-chain governed**: `fee_bps`, `fee_recipient`, and `cancel_delay_secs` can only change via `propose_fee_update` → `approve_fee_update` → `execute_fee_update`. Execution requires `>= required_approvals` distinct `require_auth()` approvals from the configured governance signer set (`set_governance_config`), plus a minimum on-chain timelock after quorum is reached. The admin key alone cannot redirect protocol fees.
+- **Everything else admin-gated is still a single-key operation**: pause/unpause, dispute windows, escrow hold config, allowed tokens, admin transfer, and the swap `MultiSigConfig` threshold are all set with a plain `admin.require_auth()` call — whoever holds the admin key controls them directly, with no on-chain quorum or timelock.
+
 See [contracts/](/contracts/) for sources and [docs/architecture.md](./docs/architecture.md) for sequence diagrams.
 
 ## Getting Started
