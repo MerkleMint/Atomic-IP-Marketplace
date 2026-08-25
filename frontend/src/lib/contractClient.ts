@@ -131,6 +131,65 @@ export async function getSwapsByBuyer(buyerAddress: string) {
 }
 
 /**
+ * Fetch a single page of swap IDs for a buyer by calling get_swaps_by_buyer_page.
+ * Unlike getSwapsByBuyer, this only reads the page(s) spanning
+ * `[offset, offset + limit)`, so its cost doesn't grow with the buyer's
+ * total swap count.
+ * @param {string} buyerAddress - Stellar public key (G...)
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {Promise<number[]>}
+ */
+export async function getSwapsByBuyerPage(
+  buyerAddress: string,
+  offset: number,
+  limit: number
+) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(buyerAddress),
+    { type: "address" }
+  );
+  const offsetScVal = StellarSdk.nativeToScVal(offset, { type: "u32" });
+  const limitScVal = StellarSdk.nativeToScVal(limit, { type: "u32" });
+
+  const retval = await simulateView("get_swaps_by_buyer_page", [
+    addressScVal,
+    offsetScVal,
+    limitScVal,
+  ]);
+  if (!retval) return [];
+
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
+}
+
+const SWAP_INDEX_PAGE_LIMIT = 50;
+
+/**
+ * Fetch a buyer's complete swap ID history by walking get_swaps_by_buyer_page.
+ * Prefer this over getSwapsByBuyer for UI code: each individual RPC call only
+ * ever reads a bounded page rather than the buyer's entire history at once.
+ * @param {string} buyerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getAllSwapsByBuyer(buyerAddress: string) {
+  const ids: number[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await getSwapsByBuyerPage(
+      buyerAddress,
+      offset,
+      SWAP_INDEX_PAGE_LIMIT
+    );
+    ids.push(...page);
+    if (page.length < SWAP_INDEX_PAGE_LIMIT) break;
+    offset += page.length;
+  }
+  return ids;
+}
+
+/**
  * Fetch full swap details for a single swap ID using get_swap contract function.
  * Task 1: single call replaces multiple get_swap_status + get_decryption_key calls.
  * @param {number} swapId
@@ -181,6 +240,84 @@ export async function cancelSwap(
     .addOperation(
       contract.call(
         "cancel_swap",
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Calls release_to_seller(swap_id) on the atomic_swap contract.
+ * Seller-only: transfers the escrowed USDC to the seller once the dispute
+ * window and escrow hold period have both elapsed.
+ * @param {string|number} swapId
+ * @param {object} wallet  - Connected wallet with signTransaction method
+ * @returns {Promise<void>}
+ */
+export async function releaseToSeller(
+  swapId: number | string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+) {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "release_to_seller",
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
+ * Calls confirm_receipt(swap_id) on the atomic_swap contract.
+ * Buyer-only: voluntarily waives the remaining escrow hold period so the
+ * seller may release funds immediately.
+ * @param {string|number} swapId
+ * @param {object} wallet  - Connected wallet with signTransaction method
+ * @returns {Promise<void>}
+ */
+export async function confirmReceipt(
+  swapId: number | string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  }
+) {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "confirm_receipt",
         StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
       )
     )
@@ -530,6 +667,61 @@ export async function getListingCount() {
 }
 
 /**
+ * Decode a Version ScVal into a plain JS object.
+ * Version { version_number, timestamp, changelog, ipfs_hash, merkle_root,
+ *           price_usdc, royalty_bps, created_by }
+ */
+function decodeVersionScVal(native: any): IpVersion {
+  const toHex = (v: any) =>
+    v instanceof Uint8Array || Buffer.isBuffer(v)
+      ? Buffer.from(v).toString("hex")
+      : String(v ?? "");
+  const toUtf8 = (v: any) =>
+    v instanceof Uint8Array || Buffer.isBuffer(v)
+      ? Buffer.from(v).toString("utf-8")
+      : String(v ?? "");
+
+  return {
+    version_number: Number(native.version_number ?? 0),
+    timestamp: Number(native.timestamp ?? 0),
+    changelog: toUtf8(native.changelog),
+    ipfs_hash: toHex(native.ipfs_hash),
+    merkle_root: toHex(native.merkle_root),
+    price_usdc: Number(native.price_usdc ?? 0),
+    royalty_bps: Number(native.royalty_bps ?? 0),
+    created_by: String(native.created_by ?? ""),
+  };
+}
+
+/**
+ * Fetch one bounded page of a listing's version history, oldest first.
+ * Mirrors the contract's `get_version_history_page(listing_id, offset, limit)`,
+ * which caps `limit` server-side — callers should page with `offset` rather
+ * than requesting the whole history in one call.
+ *
+ * @param {number} listingId
+ * @param {number} offset - 0-based index into the version sequence
+ * @param {number} limit - max entries to return (server-capped)
+ * @returns {Promise<IpVersion[]>}
+ */
+export async function getVersionHistoryPage(
+  listingId: number,
+  offset: number,
+  limit: number
+): Promise<IpVersion[]> {
+  const retval = await simulateIpRegistryView("get_version_history_page", [
+    StellarSdk.nativeToScVal(listingId, { type: "u64" }),
+    StellarSdk.nativeToScVal(offset, { type: "u32" }),
+    StellarSdk.nativeToScVal(limit, { type: "u32" }),
+  ]);
+
+  if (!retval) return [];
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(decodeVersionScVal);
+}
+
+/**
  * Return whether a listing currently has a pending swap in atomic_swap.
  * @param {number} listingId
  * @returns {Promise<boolean>}
@@ -634,6 +826,63 @@ export async function getSwapsBySeller(sellerAddress: string) {
   const arr = StellarSdk.scValToNative(retval);
   if (!Array.isArray(arr)) return [];
   return arr.map((v) => Number(v));
+}
+
+/**
+ * Fetch a single page of swap IDs for a seller by calling get_swaps_by_seller_page.
+ * Unlike getSwapsBySeller, this only reads the page(s) spanning
+ * `[offset, offset + limit)`, so its cost doesn't grow with the seller's
+ * total swap count.
+ * @param {string} sellerAddress - Stellar public key (G...)
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {Promise<number[]>}
+ */
+export async function getSwapsBySellerPage(
+  sellerAddress: string,
+  offset: number,
+  limit: number
+) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(sellerAddress),
+    { type: "address" }
+  );
+  const offsetScVal = StellarSdk.nativeToScVal(offset, { type: "u32" });
+  const limitScVal = StellarSdk.nativeToScVal(limit, { type: "u32" });
+
+  const retval = await simulateView("get_swaps_by_seller_page", [
+    addressScVal,
+    offsetScVal,
+    limitScVal,
+  ]);
+  if (!retval) return [];
+
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
+}
+
+/**
+ * Fetch a seller's complete swap ID history by walking get_swaps_by_seller_page.
+ * Prefer this over getSwapsBySeller for UI code: each individual RPC call only
+ * ever reads a bounded page rather than the seller's entire history at once.
+ * @param {string} sellerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getAllSwapsBySeller(sellerAddress: string) {
+  const ids: number[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await getSwapsBySellerPage(
+      sellerAddress,
+      offset,
+      SWAP_INDEX_PAGE_LIMIT
+    );
+    ids.push(...page);
+    if (page.length < SWAP_INDEX_PAGE_LIMIT) break;
+    offset += page.length;
+  }
+  return ids;
 }
 
 // ─── USDC Balance ─────────────────────────────────────────────────────────────

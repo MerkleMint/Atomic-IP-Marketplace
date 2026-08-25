@@ -234,6 +234,12 @@ export function useSwapNotifications(
               { href: `/swap/${swap.id}`, meta: { swapId: swap.id } }
             );
           }
+          // Note: funds are still held in escrow at this point — the
+          // "Payment Received" notification only fires once release_to_seller
+          // (or a dispute resolution) actually moves them; see "ResolvedSeller".
+          break;
+        }
+        case "ResolvedSeller": {
           if (isSeller) {
             send(
               "payment_confirmed",
