@@ -34,17 +34,20 @@ sequenceDiagram
     USDC-->>AtomicSwap: ok
     AtomicSwap-->>Buyer: swap_id
 
-    %% 5. Seller confirms swap (reveals decryption key, receives USDC)
-    Seller->>AtomicSwap: confirm_swap(swap_id, decryption_key)
+    %% 5. Seller confirms swap (reveals decryption key; USDC stays escrowed)
+    Seller->>AtomicSwap: confirm_swap(swap_id, decryption_key, proof_path)
     Note over AtomicSwap: asserts swap.status == Pending
-    AtomicSwap->>USDC: transfer(contract → fee_recipient, fee)
-    AtomicSwap->>USDC: transfer(contract → seller, amount - fee)
-    USDC-->>AtomicSwap: ok
-    AtomicSwap-->>Seller: ok (status → Completed)
+    AtomicSwap-->>Seller: ok (status → Completed; hold_until snapshotted)
 
     %% 6. Buyer retrieves decryption key
     Buyer->>AtomicSwap: get_decryption_key(swap_id)
     AtomicSwap-->>Buyer: decryption_key
+
+    %% 7. USDC is only released once the dispute window and escrow hold both
+    %% clear — see "Escrow Hold Period" below. In the dApp, the seller does
+    %% this from the swap page's "Release Payment" button; no CLI call
+    %% is required.
+    Note over Seller,Buyer: See Escrow Hold Period for the release_to_seller step
 ```
 
 ---
@@ -124,7 +127,25 @@ protection window.
 `SellerHoldPeriodUpdated`, `EscrowHoldConfigUpdated`, and `BuyerConfirmedReceipt`
 events provide an on-chain record of configuration changes and early-release
 authorizations. The `hold_period_active(swap_id)` view returns whether a swap's
-funds are currently time-locked, which the UI surfaces via `HoldPeriodDisplay`.
+funds are currently time-locked; the frontend's `HoldPeriodDisplay` derives the
+same result client-side from `get_swap`'s `hold_until`/`buyer_confirmed` fields
+and the on-chain ledger timestamp, so its countdown can't drift on a skewed
+local clock.
+
+### In-app release flow
+
+The swap page wires both payout paths directly, so a seller never needs the
+CLI to actually collect payment:
+
+- **Seller — "Release Payment"**: calls `release_to_seller(swap_id)` once the
+  dispute window and escrow hold have both cleared. Disabled while the hold is
+  still active.
+- **Buyer — "Confirm Receipt & Release Early"**: calls `confirm_receipt(swap_id)`
+  to waive the remaining hold once they're satisfied with the delivered IP.
+
+The "Payment Received" notification only fires once a swap actually reaches
+`ResolvedSeller` (funds moved), not when it merely reaches `Completed` (the key
+was revealed but funds are still escrowed).
 
 ```mermaid
 sequenceDiagram
