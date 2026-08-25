@@ -2687,7 +2687,7 @@ impl AtomicSwap {
         }
 
         let favor_buyer = dispute.outcome == DisputeOutcome::FavorBuyer;
-        Self::distribute_dispute_funds(&env, &mut swap, favor_buyer);
+        Self::distribute_dispute_funds(&env, swap_id, &mut swap, favor_buyer);
 
         env.storage().persistent().set(&key, &swap);
         env.storage()
