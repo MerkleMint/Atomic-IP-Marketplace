@@ -86,6 +86,24 @@ path, and would break a seller who legitimately sets the root in `zk_verifier`
 redundant dual-write burden on every listing edit — only the swap path needs
 the guard.
 
+### Pending-Swap Guard on Listing Mutations
+
+`update_listing`, `transfer_listing_ownership`, `create_version`, and
+`deregister_listing` all reject with `PendingSwapExists` while a swap is
+`Pending` for the listing, so a seller can't edit, reassign, version, or
+delete a listing out from under a buyer who is mid-swap.
+
+**Enforced unconditionally, not caller-configurable.** The `atomic_swap`
+contract consulted for this check is a single address stored in
+`ip_registry`'s `Config`, set at `initialize` and changeable only by the
+admin via `set_atomic_swap`. None of the four functions above accept an
+`atomic_swap` address as a call parameter — the listing owner (who is
+exactly the party this check restrains) has no way to point it at a
+different contract, and `deregister_listing` has no way to skip the check
+either. This closes off the alternative a caller-supplied address would
+otherwise leave open: deploying a look-alike contract whose
+`has_pending_swap` always returns `false`.
+
 ---
 
 ## Cancel / Refund Flow
