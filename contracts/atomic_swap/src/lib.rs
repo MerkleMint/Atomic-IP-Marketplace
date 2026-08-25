@@ -118,6 +118,9 @@ pub enum ContractError {
     /// `settle_dispute` called on a swap that is not awaiting settlement
     /// (not in `PendingAppealWindow` or `Appealed` status).
     SwapNotAwaitingSettlement = 48,
+    /// ip_registry's advertised merkle_root for the listing does not match
+    /// the root registered in zk_verifier (or no root is registered at all).
+    MerkleRootMismatch = 49,
 }
 
 #[contracttype]
