@@ -1690,7 +1690,10 @@ impl AtomicSwap {
                 .persistent()
                 .get(&DataKey::Swap(existing_swap_id))
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
-            if existing_swap.status == SwapStatus::Pending && existing_swap.buyer != buyer {
+            if (existing_swap.status == SwapStatus::Pending
+                || existing_swap.status == SwapStatus::PendingMultiSig)
+                && existing_swap.buyer != buyer
+            {
                 env.panic_with_error(ContractError::SwapAlreadyPending);
             }
         }
@@ -2213,7 +2216,7 @@ impl AtomicSwap {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
-        if swap.status != SwapStatus::Pending {
+        if swap.status != SwapStatus::Pending && swap.status != SwapStatus::PendingMultiSig {
             env.panic_with_error(ContractError::SwapNotPending);
         }
         swap.buyer.require_auth();
@@ -2262,6 +2265,11 @@ impl AtomicSwap {
         env.storage()
             .persistent()
             .remove(&DataKey::ActiveListingSwap(swap.listing_id));
+        // Clear any partial multi-sig approval accumulator (no-op if this swap
+        // never entered PendingMultiSig).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MultiSigApproval(swap_id));
         // Extend TTL on every state-mutating call to prevent expiration
         env.storage().persistent().extend_ttl(
             &DataKey::Admin,
@@ -7519,6 +7527,120 @@ mod test {
         let usdc = token::Client::new(&env, &usdc_id);
         assert_eq!(usdc.balance(&seller), amount);
         assert_eq!(usdc.balance(&buyer), 0);
+    }
+
+    /// Issue #714: a second, different buyer must be rejected while the
+    /// existing swap on this listing is stuck in PendingMultiSig — not just
+    /// while it is Pending. Without this guard a second buyer could lock
+    /// their own USDC and overwrite ActiveListingSwap, letting the seller
+    /// double-sell once both swaps eventually unlock.
+    #[test]
+    fn test_initiate_swap_rejects_second_buyer_when_pending_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer1 = Address::generate(&env);
+        let buyer2 = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let high_value: i128 = 1_000_000_000_000; // 100,000 USDC
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer1, &seller, high_value, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id1 =
+            client.initiate_swap(&listing_id, &buyer1, &seller, &usdc_id, &high_value);
+        assert_eq!(
+            client.get_swap_status(&swap_id1),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // A different buyer must be rejected while buyer1's swap is stuck in
+        // PendingMultiSig — not just while it is Pending.
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer2, &high_value);
+        token::Client::new(&env, &usdc_id).approve(
+            &buyer2,
+            &client.address,
+            &high_value,
+            &200u32,
+        );
+        let result =
+            client.try_initiate_swap(&listing_id, &buyer2, &seller, &usdc_id, &high_value);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::SwapAlreadyPending as u32
+            )))
+        );
+    }
+
+    /// Issue #714: a high-value swap whose multisig quorum is never reached
+    /// must still be cancellable and refundable after cancel_delay_secs, and
+    /// cancellation must clear both ActiveListingSwap and the partial
+    /// MultiSigApproval accumulator so the listing becomes available again.
+    #[test]
+    fn test_cancel_swap_refunds_stranded_pending_multisig_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+
+        let high_value: i128 = 1_000_000_000_000; // 100,000 USDC
+        let (usdc_id, listing_id, _, contract_id, client, _, _) =
+            setup_full(&env, &buyer, &seller, high_value, 1);
+
+        setup_multisig(&env, &client, &signer1, &signer2, &seller, 500_000_000);
+
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &high_value);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // Only one of the two required signers approves — quorum is never
+        // reached, so the swap is stuck in PendingMultiSig.
+        client.approve_multisig_swap(&swap_id, &signer1);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingMultiSig)
+        );
+
+        // Advance past cancel_delay_secs (60s configured in setup_full).
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+
+        client.cancel_swap(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Cancelled)
+        );
+
+        let usdc = token::Client::new(&env, &usdc_id);
+        assert_eq!(usdc.balance(&buyer), high_value);
+
+        env.as_contract(&contract_id, || {
+            assert!(
+                !env.storage()
+                    .persistent()
+                    .has(&DataKey::ActiveListingSwap(listing_id)),
+                "ActiveListingSwap should be removed after cancelling a stranded PendingMultiSig swap"
+            );
+        });
+
+        assert!(
+            client.get_multisig_approval(&swap_id).is_none(),
+            "partial MultiSigApproval state should be cleared on cancel"
+        );
+
+        // Listing must be available again for a fresh buyer.
+        assert!(client.is_listing_available(&listing_id));
     }
 
     // ── Fee governance tests ──────────────────────────────────────────────────
