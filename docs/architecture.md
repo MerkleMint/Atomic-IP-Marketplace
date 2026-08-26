@@ -109,6 +109,11 @@ otherwise leave open: deploying a look-alike contract whose
 ## Cancel / Refund Flow
 
 If the seller never calls `confirm_swap` before the timeout, the buyer can reclaim their USDC.
+This applies equally to a high-value swap stuck in `PendingMultiSig` — if
+multi-sig quorum is never reached (a lost key, an unresponsive signer),
+`cancel_swap` still unblocks and refunds it once `cancel_delay_secs` has
+elapsed since `created_at`, clearing `ActiveListingSwap` and the partial
+`MultiSigApproval` accumulator so the listing becomes available again.
 
 ```mermaid
 sequenceDiagram
@@ -130,8 +135,8 @@ sequenceDiagram
 
     %% Buyer cancels and reclaims USDC
     Buyer->>AtomicSwap: cancel_swap(swap_id)
-    Note over AtomicSwap: asserts swap.status == Pending
-    Note over AtomicSwap: asserts ledger.timestamp >= swap.expires_at
+    Note over AtomicSwap: asserts swap.status == Pending OR PendingMultiSig
+    Note over AtomicSwap: asserts ledger.timestamp >= created_at + cancel_delay_secs
     AtomicSwap->>USDC: transfer(contract → buyer, amount)
     USDC-->>AtomicSwap: ok
     AtomicSwap-->>Buyer: ok (status → Cancelled)
