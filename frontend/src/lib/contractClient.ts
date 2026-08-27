@@ -1010,6 +1010,8 @@ export interface DisputeRecord {
   resolved_at_ledger: number | null;
   vote_weight_buyer: string;
   vote_weight_seller: string;
+  revealed_vote_count: number;
+  quorum_extension_used: boolean;
   commit_deadline_ledger: number;
   reveal_deadline_ledger: number;
   appeal_deadline_ledger: number | null;
@@ -1045,6 +1047,8 @@ function decodeDisputeScVal(
     resolved_at_ledger: toNum(native.resolved_at_ledger),
     vote_weight_buyer: String(native.vote_weight_buyer ?? "0"),
     vote_weight_seller: String(native.vote_weight_seller ?? "0"),
+    revealed_vote_count: Number(native.revealed_vote_count ?? 0),
+    quorum_extension_used: Boolean(native.quorum_extension_used),
     commit_deadline_ledger: Number(native.commit_deadline_ledger ?? 0),
     reveal_deadline_ledger: Number(native.reveal_deadline_ledger ?? 0),
     appeal_deadline_ledger: toNum(native.appeal_deadline_ledger),
