@@ -259,3 +259,50 @@ long before an admin later raises `fee_bps` via `update_config`.
 - **Overflow-safe arithmetic.** Both the fee and royalty computations use
   `checked_mul`/`checked_div` against 10,000 (matching pattern), panicking
   with `ContractError::Overflow` rather than wrapping silently.
+
+## Dispute Voting: Participation Quorum
+
+`raise_dispute` is only reachable after `confirm_swap`, so by the time a dispute
+exists the buyer has already been handed the decryption key. The escrow is
+therefore the only leverage left, and the rules for releasing it have to assume
+an adversarial buyer.
+
+Arbiters vote through a commit-reveal scheme: `commit_vote` stores
+`sha256(vote_byte || salt)` before `commit_deadline_ledger`, and `reveal_vote`
+opens it between the commit deadline and `reveal_deadline_ledger`. Both phases
+keep their original guarantees: the reveal must hash back to the stored
+commitment, one commit per arbiter, one reveal per arbiter.
+
+**What the tie-break rule actually requires.** `finalize_dispute` resolves an
+exact tie in the buyer's favour, but that consumer-protection default only means
+something when arbiters actually reviewed the claim. A dispute nobody voted on
+tallies 0 against 0, which is not a split decision. Treating it as one would let
+a buyer raise a dispute, do nothing, wait out both windows, call
+`finalize_dispute` themselves, and collect a full refund while keeping the
+decrypted IP, with no arbiter ever looking at the claim and no way for the
+seller to tell the difference from the emitted events.
+
+So participation is required before the tally is applied:
+
+- **Quorum.** `finalize_dispute` applies the tally only when
+  `dispute.revealed_vote_count >= get_dispute_quorum()`. The default is 1 vote,
+  and the admin can raise it with `set_dispute_quorum`.
+- **One extension, not an automatic outcome.** The first `finalize_dispute` call
+  that finds the reveal deadline reached without quorum reopens both the commit
+  and the reveal phase from the current ledger (the commit phase too, otherwise
+  a dispute nobody committed to would get a reveal window no arbiter is eligible
+  to use) and publishes `DisputeQuorumExtended`. The dispute stays `Pending`,
+  the swap stays `Disputed`, and no funds move.
+- **Distinct failure signal.** After the extension lapses with quorum still
+  unmet, `finalize_dispute` rejects with `DisputeQuorumNotMet` (57) instead of
+  defaulting to the buyer. That error is deliberately distinct from a genuine
+  tie: a real tie emits `DisputeFinalized { favor_buyer: true }`, so an observer
+  can always tell "arbiters split evenly" from "nobody voted".
+- **Explicit fallback.** A quorum-less dispute leaves the swap in `Disputed`,
+  which only the admin's `resolve_dispute` can settle. Human arbitration is the
+  fallback precisely because neither automatic default is defensible here: a
+  refund is the outcome the attack was engineered to produce, and a payout to
+  the seller would punish a buyer whose genuine claim no arbiter answered.
+
+`set_dispute_quorum(0)` restores the pre-quorum behaviour and is only
+appropriate for a deployment that has registered no arbiters at all.

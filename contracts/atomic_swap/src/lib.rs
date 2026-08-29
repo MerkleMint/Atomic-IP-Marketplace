@@ -14,6 +14,12 @@ const DEFAULT_APPEAL_WINDOW_LEDGERS: u32 = 17_280;
 /// Default window an appealed dispute waits for admin's `resolve_dispute` before
 /// anyone may settle it per the original arbiter outcome (stuck-funds guard).
 const DEFAULT_APPEAL_RESOLUTION_WINDOW_LEDGERS: u32 = 17_280;
+/// Minimum number of revealed arbiter votes a dispute needs before
+/// `finalize_dispute` will apply the tie-break rule. Without this, a dispute in
+/// which nobody voted tallies 0 vs 0, which the tie-break reads as a buyer win —
+/// letting a buyer self-award a full refund with no arbiter ever reviewing the
+/// claim. Defaults to 1: at least one arbiter must have actually voted.
+const DEFAULT_DISPUTE_QUORUM_VOTES: u32 = 1;
 /// Default escrow hold period: 7 days at ~6 s/ledger.
 const DEFAULT_HOLD_PERIOD_SECS: u64 = 604_800;
 /// Maximum escrow hold the admin or seller may configure (30 days).
@@ -147,6 +153,12 @@ pub enum ContractError {
     FeeGovernanceTimelockActive = 55,
     /// Governance configuration is invalid (e.g. required > signer count).
     InvalidGovernanceConfig = 56,
+    // ── Dispute quorum errors (57) ────────────────────────────────────────────
+    /// `finalize_dispute` reached the (already extended) reveal deadline with
+    /// fewer revealed votes than the configured quorum. Distinct from a genuine
+    /// tie: nobody voted, so there is no arbiter outcome to apply. The dispute
+    /// stays `Pending` and only the admin's `resolve_dispute` can settle it.
+    DisputeQuorumNotMet = 57,
 }
 
 #[contracttype]
@@ -264,6 +276,13 @@ pub struct Dispute {
     pub vote_weight_buyer: i128,
     /// Sum of revealed voting weights favouring the seller.
     pub vote_weight_seller: i128,
+    /// Number of arbiters who have actually revealed a vote. Checked against
+    /// the configured quorum in `finalize_dispute` so a zero-participation
+    /// dispute is never mistaken for a genuine tie.
+    pub revealed_vote_count: u32,
+    /// Set once `finalize_dispute` has granted the single quorum extension, so
+    /// the windows cannot be extended repeatedly.
+    pub quorum_extension_used: bool,
     /// Arbiters must commit a blinded vote before this ledger.
     pub commit_deadline_ledger: u32,
     /// Arbiters must reveal their vote between commit_deadline and this ledger.
@@ -423,6 +442,8 @@ pub enum DataKey {
     /// Ledger window during which the admin may act on an appealed dispute
     /// before anyone may settle it per the original arbiter outcome.
     AppealResolutionWindowLedgers,
+    /// Minimum number of revealed votes required to finalize a dispute.
+    DisputeQuorumVotes,
     // ── Escrow hold ───────────────────────────────────────────────────────────
     /// Per-seller hold period override (u64 seconds). Absent = use global default.
     SellerHoldPeriod(Address),
@@ -708,6 +729,18 @@ pub struct VoteRevealed {
     pub swap_id: u64,
     pub arbiter: Address,
     pub favor_buyer: bool,
+}
+
+/// Emitted when `finalize_dispute` finds the reveal deadline reached without a
+/// quorum of revealed votes and grants the one-time window extension.
+#[contractevent]
+pub struct DisputeQuorumExtended {
+    #[topic]
+    pub swap_id: u64,
+    pub revealed_vote_count: u32,
+    pub required_votes: u32,
+    pub commit_deadline_ledger: u32,
+    pub reveal_deadline_ledger: u32,
 }
 
 /// Emitted when a dispute is finalized based on arbiter vote weights.
@@ -2148,6 +2181,8 @@ impl AtomicSwap {
             resolved_at_ledger: None,
             vote_weight_buyer: 0,
             vote_weight_seller: 0,
+            revealed_vote_count: 0,
+            quorum_extension_used: false,
             commit_deadline_ledger: current_ledger + commit_window,
             reveal_deadline_ledger: current_ledger + commit_window + reveal_window,
             appeal_deadline_ledger: None,
@@ -2499,8 +2534,64 @@ impl AtomicSwap {
         }
     }
 
-    /// Shared fund-distribution logic used by both resolve_dispute (admin) and
-    /// finalize_dispute (arbiter vote). Returns true when funds go to buyer.
+    /// Minimum number of revealed votes a dispute needs before its tally may be
+    /// applied. Admin-configurable via `set_dispute_quorum`.
+    fn dispute_quorum_votes(env: &Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DisputeQuorumVotes)
+            .unwrap_or(DEFAULT_DISPUTE_QUORUM_VOTES)
+    }
+
+    /// Grant the one-time quorum extension: reopen both the commit and the
+    /// reveal phase from the current ledger. The commit phase is reopened too,
+    /// otherwise an unattended dispute (nobody committed) would get a second
+    /// reveal window that no arbiter is eligible to use.
+    fn extend_dispute_windows(
+        env: &Env,
+        dispute_key: &DataKey,
+        dispute: &mut Dispute,
+        required_votes: u32,
+    ) {
+        let commit_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CommitWindowLedgers)
+            .unwrap_or(DEFAULT_COMMIT_WINDOW_LEDGERS);
+        let reveal_window: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevealWindowLedgers)
+            .unwrap_or(DEFAULT_REVEAL_WINDOW_LEDGERS);
+        let current = env.ledger().sequence();
+
+        dispute.commit_deadline_ledger = current + commit_window;
+        dispute.reveal_deadline_ledger = current + commit_window + reveal_window;
+        dispute.quorum_extension_used = true;
+
+        env.storage().persistent().set(dispute_key, dispute);
+        env.storage().persistent().extend_ttl(
+            dispute_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        DisputeQuorumExtended {
+            swap_id: dispute.swap_id,
+            revealed_vote_count: dispute.revealed_vote_count,
+            required_votes,
+            commit_deadline_ledger: dispute.commit_deadline_ledger,
+            reveal_deadline_ledger: dispute.reveal_deadline_ledger,
+        }
+        .publish(env);
+    }
+
+    /// Shared fund-distribution logic for the two calls that actually move
+    /// escrow: resolve_dispute (admin) and settle_dispute (post-holdback).
+    /// finalize_dispute only records the outcome; it never pays out.
     fn distribute_dispute_funds(env: &Env, swap_id: u64, swap: &mut Swap, favor_buyer: bool) {
         let token_client = token::Client::new(env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
@@ -2666,6 +2757,28 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+    }
+
+    /// Admin: set the minimum number of revealed arbiter votes `finalize_dispute`
+    /// requires before it will apply the vote tally. Setting `0` disables the
+    /// participation requirement and restores the pre-quorum behaviour where an
+    /// unvoted dispute finalizes in the buyer's favour — only appropriate for a
+    /// deployment with no arbiter set at all.
+    pub fn set_dispute_quorum(env: Env, min_votes: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DisputeQuorumVotes, &min_votes);
+        env.storage().persistent().extend_ttl(
+            &DataKey::DisputeQuorumVotes,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+    }
+
+    /// Read the configured dispute vote quorum.
+    pub fn get_dispute_quorum(env: Env) -> u32 {
+        Self::dispute_quorum_votes(&env)
     }
 
     /// Admin: configure how long an appealed dispute waits for `resolve_dispute`
@@ -3072,6 +3185,7 @@ impl AtomicSwap {
                 .vote_weight_seller
                 .saturating_add(arbiter_info.weight);
         }
+        dispute.revealed_vote_count += 1;
         env.storage().persistent().set(&dispute_key, &dispute);
         env.storage().persistent().extend_ttl(
             &dispute_key,
@@ -3091,7 +3205,15 @@ impl AtomicSwap {
     /// / `settle_dispute` after the resolution timeout). This holdback is what
     /// lets an appeal actually reverse the outcome instead of requiring a
     /// clawback of funds already paid out.
-    /// Ties resolve in the buyer's favour (consumer protection default).
+    /// A genuine tie between arbiters who did vote resolves in the buyer's
+    /// favour (consumer protection default). Zero participation is *not* a tie:
+    /// if fewer than the configured quorum of arbiters revealed a vote, this
+    /// grants a single extension of the commit and reveal windows, and after
+    /// that panics with `DisputeQuorumNotMet`, leaving the dispute `Pending` so
+    /// the admin's `resolve_dispute` is the only way it can settle. That closes
+    /// the path where a buyer raises a dispute, lets both windows lapse without
+    /// any arbiter review, and self-awards a full refund on the 0 >= 0 tie while
+    /// keeping the already-decrypted IP.
     /// Anyone may call this; no auth required.
     pub fn finalize_dispute(env: Env, swap_id: u64) {
         let dispute_key = DataKey::Dispute(swap_id);
@@ -3117,10 +3239,24 @@ impl AtomicSwap {
             env.panic_with_error(ContractError::SwapNotDisputed);
         }
 
+        // Participation gate: the tie-break below only speaks for arbiters who
+        // actually voted, so it must not run on an empty tally.
+        let required_votes = Self::dispute_quorum_votes(&env);
+        if dispute.revealed_vote_count < required_votes {
+            if dispute.quorum_extension_used {
+                env.panic_with_error(ContractError::DisputeQuorumNotMet);
+            }
+            Self::extend_dispute_windows(&env, &dispute_key, &mut dispute, required_votes);
+            return;
+        }
+
         // Ties default to buyer (consumer protection).
         let favor_buyer = dispute.vote_weight_buyer >= dispute.vote_weight_seller;
 
-        Self::distribute_dispute_funds(&env, swap_id, &mut swap, favor_buyer);
+        // Record the outcome but hold the escrow: paying out here would mean an
+        // appeal had to claw funds back. `settle_dispute` releases it once the
+        // appeal window closes, or `resolve_dispute` does after an appeal.
+        swap.status = SwapStatus::PendingAppealWindow;
 
         let current = env.ledger().sequence();
         let appeal_window: u32 = env
@@ -4754,18 +4890,18 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
         registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
+        let key_bytes = Bytes::from_slice(&env, b"key");
         // Listing created while royalty_bps = 6000 is still well within the
         // combined-bps budget (fee_bps is 0 at this point).
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &6_000u32, // 60% royalty
             &royalty_recipient,
             &1i128,
         );
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -4788,7 +4924,7 @@ mod test {
 
         // Admin later raises fee_bps to 6000. Combined with the existing
         // royalty_bps = 6000 listing, fee_bps + royalty_bps = 12_000 > 10_000.
-        client.update_config(&6_000u32, &fee_recipient, &60u64);
+        raise_fee_bps(&env, &client, &admin, 6_000, &fee_recipient, 60);
 
         client.set_dispute_window(&10u32);
         env.ledger().with_mut(|li| li.sequence_number += 11);
@@ -4829,16 +4965,16 @@ mod test {
         let registry = IpRegistryClient::new(&env, &registry_id);
         let reg_admin = Address::generate(&env);
         registry.initialize(&reg_admin, &100_000u32, &6_312_000u32, &Address::generate(&env));
+        let key_bytes = Bytes::from_slice(&env, b"key");
         let listing_id = registry.register_ip(
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
+            &root_for_leaf(&env, &key_bytes),
             &6_000u32, // 60% royalty
             &royalty_recipient,
             &1i128,
         );
 
-        let key_bytes = Bytes::from_slice(&env, b"key");
         let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
 
         let contract_id = env.register(AtomicSwap, ());
@@ -4859,7 +4995,7 @@ mod test {
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &10_000);
         client.confirm_swap(&swap_id, &key_bytes, &proof_path);
 
-        client.update_config(&6_000u32, &fee_recipient, &60u64);
+        raise_fee_bps(&env, &client, &admin, 6_000, &fee_recipient, 60);
 
         client.raise_dispute(&swap_id);
         // Must not panic: the seller-favoring branch stays callable.
@@ -5223,7 +5359,7 @@ mod test {
     /// this check a seller could advertise one root to buyers (via get_listing) while
     /// a different root is enforced at proof-verification time.
     #[test]
-    #[should_panic(expected = "Error(Contract, #46)")]
+    #[should_panic(expected = "Error(Contract, #49)")]
     fn test_confirm_swap_rejects_merkle_root_mismatch() {
         let env = Env::default();
         env.mock_all_auths();
@@ -6284,8 +6420,51 @@ mod test {
         env.crypto().sha256(&preimage).into()
     }
 
+    /// Applies a fee-bps change through the on-chain fee-governance path
+    /// (1-of-1 signer set + timelock), which is the only way config fees move
+    /// now that there is no direct `update_config` entrypoint.
+    fn raise_fee_bps(
+        env: &Env,
+        client: &AtomicSwapClient,
+        admin: &Address,
+        fee_bps: u32,
+        fee_recipient: &Address,
+        cancel_delay_secs: u64,
+    ) {
+        let mut signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
+        signers.push_back(admin.clone());
+        client.set_governance_config(&signers, &1u32);
+        let proposal_id =
+            client.propose_fee_update(admin, &fee_bps, fee_recipient, &cancel_delay_secs);
+        env.ledger()
+            .with_mut(|li| li.timestamp += FEE_GOVERNANCE_TIMELOCK_SECS + 1);
+        client.execute_fee_update(&proposal_id);
+    }
+
     fn setup_arbiter(client: &AtomicSwapClient, arbiter: &Address, weight: i128) {
         client.register_arbiter(arbiter, &weight);
+    }
+
+    /// Registers a fresh arbiter and drives one full commit → reveal cycle so the
+    /// dispute meets the participation quorum `finalize_dispute` requires.
+    /// Advances the ledger past the commit deadline but stays inside the reveal
+    /// window; the caller advances past the reveal deadline itself.
+    fn cast_quorum_vote(
+        env: &Env,
+        client: &AtomicSwapClient,
+        swap_id: u64,
+        favor_buyer: bool,
+        commit_window: u32,
+    ) -> Address {
+        let arbiter = Address::generate(env);
+        client.register_arbiter(&arbiter, &100i128);
+        let salt = Bytes::from_slice(env, b"quorum-salt");
+        let commit = make_commitment(env, favor_buyer, &salt);
+        client.commit_vote(&swap_id, &arbiter, &commit);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += commit_window + 1);
+        client.reveal_vote(&swap_id, &arbiter, &favor_buyer, &salt);
+        arbiter
     }
 
     #[test]
@@ -6532,6 +6711,9 @@ mod test {
         assert_eq!(usdc_client.balance(&seller), 0);
     }
 
+    /// A genuine tie — arbiters of equal weight split for and against — still
+    /// resolves in the buyer's favour, preserving the consumer-protection
+    /// default for disputes that were actually reviewed.
     #[test]
     fn test_finalize_dispute_tie_favours_buyer() {
         let env = Env::default();
@@ -6545,14 +6727,38 @@ mod test {
         client.set_commit_window(&10u32);
         client.set_reveal_window(&10u32);
 
+        let arbiter_for_buyer = Address::generate(&env);
+        let arbiter_for_seller = Address::generate(&env);
+        client.register_arbiter(&arbiter_for_buyer, &50i128);
+        client.register_arbiter(&arbiter_for_seller, &50i128);
+
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
 
-        // No arbiters vote — both weights stay 0, tie → buyer wins
-        env.ledger().with_mut(|li| li.sequence_number += 21);
+        let salt_buyer = Bytes::from_slice(&env, b"tie-buyer");
+        let salt_seller = Bytes::from_slice(&env, b"tie-seller");
+        client.commit_vote(
+            &swap_id,
+            &arbiter_for_buyer,
+            &make_commitment(&env, true, &salt_buyer),
+        );
+        client.commit_vote(
+            &swap_id,
+            &arbiter_for_seller,
+            &make_commitment(&env, false, &salt_seller),
+        );
+
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.reveal_vote(&swap_id, &arbiter_for_buyer, &true, &salt_buyer);
+        client.reveal_vote(&swap_id, &arbiter_for_seller, &false, &salt_seller);
+
+        env.ledger().with_mut(|li| li.sequence_number += 11);
         client.finalize_dispute(&swap_id);
 
         let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.revealed_vote_count, 2);
+        assert_eq!(dispute.vote_weight_buyer, 50);
+        assert_eq!(dispute.vote_weight_seller, 50);
         assert_eq!(dispute.outcome, DisputeOutcome::FavorBuyer);
         // Escrow is held until the appeal window closes.
         assert_eq!(usdc_client.balance(&buyer), 0);
@@ -6560,6 +6766,144 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 17_281);
         client.settle_dispute(&swap_id);
         assert_eq!(usdc_client.balance(&buyer), 500);
+    }
+
+    /// A dispute nobody voted on is not a tie. The first finalize attempt
+    /// extends the commit and reveal windows once; the second panics with
+    /// `DisputeQuorumNotMet` rather than awarding the buyer a full refund, and
+    /// the dispute stays `Pending` so only the admin can settle it.
+    #[test]
+    fn test_finalize_dispute_without_quorum_does_not_favour_buyer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        let raised = client.get_dispute(&swap_id).unwrap();
+
+        // No arbiter ever votes; the buyer waits out both windows and finalizes.
+        env.ledger().with_mut(|li| li.sequence_number += 21);
+        client.finalize_dispute(&swap_id);
+
+        // First attempt buys the arbiters one more commit + reveal cycle.
+        let extended = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(extended.outcome, DisputeOutcome::Pending);
+        assert!(extended.quorum_extension_used);
+        assert!(extended.commit_deadline_ledger > raised.commit_deadline_ledger);
+        assert!(extended.reveal_deadline_ledger > raised.reveal_deadline_ledger);
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Disputed));
+        assert_eq!(usdc_client.balance(&buyer), 0);
+
+        // Still nobody votes — finalizing now is rejected, not defaulted to the buyer.
+        env.ledger().with_mut(|li| li.sequence_number += 21);
+        let result = client.try_finalize_dispute(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::DisputeQuorumNotMet as u32
+            )))
+        );
+        assert_eq!(
+            client.get_dispute(&swap_id).unwrap().outcome,
+            DisputeOutcome::Pending
+        );
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&seller), 0);
+
+        // The explicit fallback path: admin arbitration.
+        client.resolve_dispute(&swap_id, &false);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 0);
+    }
+
+    /// The extension is a real second chance: an arbiter who missed the first
+    /// commit window can still commit and reveal inside the extended windows,
+    /// after which the tally finalizes normally.
+    #[test]
+    fn test_finalize_dispute_quorum_met_during_extension() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let arbiter = Address::generate(&env);
+        client.register_arbiter(&arbiter, &100i128);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+
+        // Nobody committed in time; the first finalize reopens both phases.
+        env.ledger().with_mut(|li| li.sequence_number += 21);
+        client.finalize_dispute(&swap_id);
+
+        let salt = Bytes::from_slice(&env, b"late-salt");
+        client.commit_vote(&swap_id, &arbiter, &make_commitment(&env, false, &salt));
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.reveal_vote(&swap_id, &arbiter, &false, &salt);
+
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+
+        let dispute = client.get_dispute(&swap_id).unwrap();
+        assert_eq!(dispute.revealed_vote_count, 1);
+        assert_eq!(dispute.outcome, DisputeOutcome::FavorSeller);
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::PendingAppealWindow)
+        );
+    }
+
+    /// The quorum is admin-configurable: raising it means a single revealed
+    /// vote is no longer enough to apply the tally.
+    #[test]
+    fn test_set_dispute_quorum_raises_participation_requirement() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, _, _, client, _, _) =
+            setup_full(&env, &buyer, &seller, 500, 1);
+
+        assert_eq!(client.get_dispute_quorum(), 1);
+        client.set_dispute_quorum(&2u32);
+        assert_eq!(client.get_dispute_quorum(), 2);
+
+        client.set_commit_window(&10u32);
+        client.set_reveal_window(&10u32);
+
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
+        client.raise_dispute(&swap_id);
+        cast_quorum_vote(&env, &client, swap_id, true, 10);
+
+        // One vote of two required — the tally must not be applied.
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.finalize_dispute(&swap_id);
+        assert!(client.get_dispute(&swap_id).unwrap().quorum_extension_used);
+
+        env.ledger().with_mut(|li| li.sequence_number += 21);
+        let result = client.try_finalize_dispute(&swap_id);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::DisputeQuorumNotMet as u32
+            )))
+        );
     }
 
     #[test]
@@ -6599,6 +6943,9 @@ mod test {
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
+
+        // An arbiter must actually vote before the tally can be applied.
+        cast_quorum_vote(&env, &client, swap_id, true, 5);
 
         // Fast-forward past both windows to finalize
         env.ledger().with_mut(|li| li.sequence_number += 11);
@@ -6694,6 +7041,7 @@ mod test {
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
+        cast_quorum_vote(&env, &client, swap_id, true, 5);
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.finalize_dispute(&swap_id);
 
@@ -6741,6 +7089,7 @@ mod test {
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
+        cast_quorum_vote(&env, &client, swap_id, true, 5);
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.finalize_dispute(&swap_id);
 
@@ -6769,6 +7118,7 @@ mod test {
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
+        cast_quorum_vote(&env, &client, swap_id, true, 5);
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.finalize_dispute(&swap_id);
 
@@ -6793,6 +7143,7 @@ mod test {
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, 500);
         client.raise_dispute(&swap_id);
+        cast_quorum_vote(&env, &client, swap_id, true, 5);
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.finalize_dispute(&swap_id);
 
