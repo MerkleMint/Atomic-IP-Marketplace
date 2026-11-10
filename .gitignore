@@ -15,8 +15,6 @@ build_error.txt
 build_output.txt
 
 # Environment files
-.env
-.env.local
 .env.*.local
 
 # Logs
@@ -45,7 +43,6 @@ lcov.info
 
 # IDE / editor configs
 .kiro/
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -57,3 +54,4 @@ pr_body.txt
 # OS files
 .DS_Store
 Thumbs.db
+config.bat
